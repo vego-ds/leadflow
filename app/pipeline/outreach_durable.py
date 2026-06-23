@@ -1,0 +1,166 @@
+"""
+Durable outreach runner.
+
+run_outreach_durable() is the BackgroundTask target for /webhook/new-lead.
+It wraps the standard run_outreach() call with DB-backed state tracking so
+that:
+
+  - Only one worker processes a given lead at a time (optimistic locking via
+    the outreach_state column).
+  - A crashed or stalled worker leaves the lead in a recoverable state so the
+    reconciler (app/reconciler.py) can re-schedule it.
+  - After 5 failed attempts the lead is moved to FAILED and the reconciler
+    stops picking it up.
+
+outreach_state lifecycle:
+    PENDING       — waiting to be processed
+    IN_PROGRESS   — a worker has claimed this lead (outreach_started_at set)
+    DONE          — outreach completed successfully
+    FAILED        — exhausted MAX_ATTEMPTS (needs human review)
+
+IMPORTANT: run_outreach_durable is an async function. The sync pipeline
+functions (run_outreach, handle_call_result) are called via
+asyncio.get_event_loop().run_in_executor so they can safely call
+asyncio.run() internally (they run in a thread, not the event loop).
+"""
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.db.models import LeadRow
+from app.utils.logging import log
+
+MAX_ATTEMPTS = 5
+STALE_THRESHOLD_MINUTES = 2
+
+
+async def run_outreach_durable(
+    lead_id: str,
+    store: Any = None,
+    dialer: Any = None,
+    email: Any = None,
+    whatsapp: Any = None,
+) -> None:
+    """Claim the lead, run outreach, and update outreach_state atomically.
+
+    Adapters default to mock implementations so the demo and tests work
+    without real credentials. In production, main.py passes the real adapters.
+
+    Args:
+        lead_id:  The lead to process.
+        store:    SheetStore instance. Defaults to a fresh InMemorySheet.
+        dialer:   Dialer adapter.
+        email:    Email Messenger adapter.
+        whatsapp: WhatsApp Messenger adapter.
+    """
+    from app.adapters.dialer import MockDialer
+    from app.adapters.sheets import InMemorySheet
+    from app.adapters.whatsapp import MockEmail, MockWhatsApp
+
+    # --- Claim the lead (atomic optimistic-lock) ----------------------------
+    now = datetime.now(timezone.utc)
+    claimed = await _claim_lead(lead_id, now)
+    if not claimed:
+        log(f"[outreach_durable] {lead_id}: already claimed by another worker, skipping")
+        return
+
+    # --- Build default adapters if not injected (demo/test path) -----------
+    if store is None:
+        store = InMemorySheet()
+    if dialer is None:
+        dialer = MockDialer(simulate_delay=False)
+    if email is None:
+        email = MockEmail()
+    if whatsapp is None:
+        whatsapp = MockWhatsApp()
+
+    # --- Fetch the lead via store in a thread (store methods use asyncio.run) --
+    loop = asyncio.get_running_loop()
+    lead = await loop.run_in_executor(None, store.get_lead, lead_id)
+    if lead is None:
+        log(f"[outreach_durable] {lead_id}: lead not found in store")
+        await _mark_done(lead_id)
+        return
+
+    # --- Run outreach in a thread (avoids asyncio.run-inside-running-loop) -
+    try:
+        from app.pipeline.outreach import handle_call_result, run_outreach
+
+        def _do_outreach():
+            outcome = run_outreach(lead, store, dialer, email, whatsapp)
+            handle_call_result(lead, outcome.result, outcome.needs_captured, store)
+            return lead
+
+        await loop.run_in_executor(None, _do_outreach)
+        await _mark_done(lead_id)
+        log(f"[outreach_durable] {lead_id}: outreach DONE")
+    except Exception as exc:  # noqa: BLE001
+        log(f"[outreach_durable] {lead_id}: outreach FAILED — {exc}")
+        await _mark_failed_or_retry(lead_id)
+
+
+# ---------------------------------------------------------------------------
+# Private DB helpers — async, use async_session directly
+# ---------------------------------------------------------------------------
+
+async def _claim_lead(lead_id: str, now: datetime) -> bool:
+    """Atomically set outreach_state=IN_PROGRESS for a PENDING or stale
+    IN_PROGRESS lead. Returns True if the claim succeeded."""
+    from sqlalchemy import update  # noqa: PLC0415
+    import app.db.engine as engine_module  # noqa: PLC0415
+
+    stale_before = now - timedelta(minutes=STALE_THRESHOLD_MINUTES)
+
+    async with engine_module.async_session() as session:
+        result = await session.execute(
+            update(LeadRow)
+            .where(
+                LeadRow.lead_id == lead_id,
+                (
+                    (LeadRow.outreach_state == "PENDING")
+                    | (
+                        (LeadRow.outreach_state == "IN_PROGRESS")
+                        & (LeadRow.outreach_started_at < stale_before)
+                    )
+                ),
+            )
+            .values(
+                outreach_state="IN_PROGRESS",
+                outreach_started_at=now,
+                outreach_attempts=LeadRow.outreach_attempts + 1,
+            )
+        )
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def _mark_done(lead_id: str) -> None:
+    from sqlalchemy import update  # noqa: PLC0415
+    import app.db.engine as engine_module  # noqa: PLC0415
+
+    async with engine_module.async_session() as session:
+        await session.execute(
+            update(LeadRow)
+            .where(LeadRow.lead_id == lead_id)
+            .values(outreach_state="DONE")
+        )
+        await session.commit()
+
+
+async def _mark_failed_or_retry(lead_id: str) -> None:
+    """On failure: reset to PENDING for reconciler retry, or set FAILED after
+    MAX_ATTEMPTS exhausted."""
+    import app.db.engine as engine_module  # noqa: PLC0415
+
+    async with engine_module.async_session() as session:
+        row = await session.get(LeadRow, lead_id)
+        if row is None:
+            return
+        if row.outreach_attempts >= MAX_ATTEMPTS:
+            row.outreach_state = "FAILED"
+            log(f"[outreach_durable] {lead_id}: max attempts reached → FAILED")
+        else:
+            row.outreach_state = "PENDING"
+        await session.commit()
