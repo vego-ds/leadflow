@@ -1,0 +1,10 @@
+[
+  {"name": "Anita", "languages_spoken": ["hi", "en"],
+   "available_slots": ["Mon 10:00", "Mon 11:00", "Tue 10:00"], "current_load": 0},
+  {"name": "Ravi", "languages_spoken": ["te", "en"],
+   "available_slots": ["Mon 14:00", "Tue 15:00"], "current_load": 0},
+  {"name": "Meera", "languages_spoken": ["ta", "ml", "en"],
+   "available_slots": ["Mon 16:00", "Wed 10:00"], "current_load": 0},
+  {"name": "Kiran", "languages_spoken": ["kn", "en"],
+   "available_slots": ["Tue 11:00", "Wed 14:00"], "current_load": 0}
+]

@@ -9,6 +9,7 @@ Run:  python -m scripts.run_demo
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 from app.adapters.dialer import MockDialer
@@ -22,24 +23,17 @@ from app.pipeline.outreach import run_outreach
 from app.pipeline.scoring import score_lead
 from app.utils.logging import log
 
-SAMPLE = Path(__file__).resolve().parent.parent / "data" / "sample_leads.csv"
-
-# Demo counselor roster (would live in the Counselors tab).
-COUNSELORS = [
-    {"name": "Anita", "languages_spoken": ["hi", "en"],
-     "available_slots": ["Mon 10:00", "Mon 11:00", "Tue 10:00"], "current_load": 0},
-    {"name": "Ravi", "languages_spoken": ["te", "en"],
-     "available_slots": ["Mon 14:00", "Tue 15:00"], "current_load": 0},
-    {"name": "Meera", "languages_spoken": ["ta", "ml", "en"],
-     "available_slots": ["Mon 16:00", "Wed 10:00"], "current_load": 0},
-    {"name": "Kiran", "languages_spoken": ["kn", "en"],
-     "available_slots": ["Tue 11:00", "Wed 14:00"], "current_load": 0},
-]
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+SAMPLE = DATA_DIR / "sample_leads.csv"
+COUNSELORS_FILE = DATA_DIR / "counselors.json"
 
 
 def main():
     store = InMemorySheet()
     dialer, email, whatsapp = MockDialer(), MockEmail(), MockWhatsApp()
+
+    with open(COUNSELORS_FILE, encoding="utf-8") as f:
+        store.seed_counselors(json.load(f))
 
     with open(SAMPLE, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
@@ -54,7 +48,7 @@ def main():
 
         run_outreach(lead, store, dialer, email, whatsapp)
         score_lead(lead, store)
-        assign_counselor(lead, COUNSELORS, store)
+        assign_counselor(lead, store)
 
         # --- Human zone is simulated below for the demo only ---
         # Two leads convert, one is lost; the rest stop at Assigned.

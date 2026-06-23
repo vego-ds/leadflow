@@ -10,8 +10,9 @@ from app.adapters.base import SheetStore
 from app.models import Lead, LeadStatus
 
 
-def assign_counselor(lead: Lead, counselors: list[dict], store: SheetStore) -> Lead:
+def assign_counselor(lead: Lead, store: SheetStore) -> Lead:
     lang = lead.preferred_language.value
+    counselors = store.get_counselors()
 
     candidates = [
         c for c in counselors
@@ -28,6 +29,7 @@ def assign_counselor(lead: Lead, counselors: list[dict], store: SheetStore) -> L
     chosen = min(candidates, key=lambda c: c.get("current_load", 0))
     slot = chosen["available_slots"].pop(0)
     chosen["current_load"] = chosen.get("current_load", 0) + 1
+    store.update_counselor(chosen)
 
     lead.assigned_counselor = chosen["name"]
     lead.counselor_slot = slot
