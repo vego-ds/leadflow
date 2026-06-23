@@ -30,15 +30,17 @@ Payment webhook ─► Converted   (Lost branch available at any stage)
 
 | Concern | Choice | Why |
 |---|---|---|
-| System of record | Google Sheets (4 tabs) | The team already lives in Sheets; no new tool to adopt |
-| Real-time ingestion | Apps Script trigger → webhook | Instant reaction without a message queue |
+| **System of record** | **SQLite (SQLAlchemy async)** | **Lead state, idempotency, and outreach durability persist across restarts** |
+| Human-facing view | Google Sheets (4 tabs) | The team already lives in Sheets; no new tool to adopt. Sheets are a *projection*, not the source of truth |
+| Real-time ingestion | Apps Script trigger → HMAC-signed webhook | Instant reaction without a message queue; signatures prevent spoofing |
 | Backend | Python + FastAPI | Light, readable, easy to extend |
 | Voice | Bolna AI (multilingual) | Native Indian-language voice agents; mocked here |
-| Reliability | Idempotent payment handling, row quarantine | Sheets are human-edited and webhooks can fire twice |
+| Reliability | DB-backed idempotency + reconciler loop | Durable across restarts; stale outreach tasks auto-recovered every 30s |
+| Webhook security | HMAC-SHA256 + 5-min replay window | Prevents spoofed and replayed webhook deliveries |
 
 **Sheet tabs:** `Leads` · `Needs Review` (quarantined bad rows) · `Counselors` (auto-assignment) · `Events` (activity log for scoring).
 
-Design principle: **start with the simplest thing that works; add infrastructure (database, queue, scheduler) only when a concrete problem demands it.**
+Design principle: **start with the simplest thing that works; add infrastructure only when a concrete problem demands it.** The DB is SQLite with Alembic migrations — no Postgres-specific features, so migration to a hosted DB is a connection-string swap.
 
 ## Languages
 
@@ -94,6 +96,8 @@ tests/                 # validation, scoring, idempotency
 
 ## Roadmap
 
-- Database for event history + ML-based lead scoring (features already logged)
-- Stale-lead recovery sweep (flag leads stuck mid-funnel)
+- ML-based lead scoring (features already logged to the event store)
 - Post-payment automation: invoice generation, onboarding email + credentials
+- Structured logging / metrics (Prometheus counters for pipeline throughput)
+- Postgres migration when SQLite WAL mode hits throughput limits (connection-string swap, no SQL changes needed)
+- Real task queue (ARQ or similar) if BackgroundTasks + reconciler proves insufficient at scale

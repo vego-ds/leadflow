@@ -2,7 +2,7 @@
 
 **Status:** Draft v1
 **Owner:** [you]
-**Last updated:** 2026-06-23
+**Last updated:** 2026-06-23 (updated after durability sprint)
 
 > Illustrative numbers (volumes, SLAs, conversion targets) are marked *(illustrative)*. Replace with measured baselines once production data is available.
 
@@ -142,7 +142,9 @@ New → Contacted → Screened → Assigned → InDiscussion → PaymentLinkSent
 
 ## 9. Constraints and assumptions
 
-- Google Sheets is the human-facing system of record. The team does not want a new tool to learn.
+- **SQLite is the system of record** for lead state, idempotency, and outreach
+  durability. Google Sheets is a human-facing projection (no pipeline decision
+  ever reads from Sheets).
 - Phone numbers are predominantly Indian (E.164 with +91 or 10-digit).
 - Voice provider (Bolna AI) supports the required Indian-language voice agents.
 - Counselors update lead status in the Sheet directly during the human zone.
@@ -182,15 +184,23 @@ All metrics are computed from the event log.
 
 Triggered by concrete need, not preemptively:
 
-1. **Internal database (Postgres/SQLite).** When Sheets-as-event-log starts hitting API rate limits or becomes too slow for analytics.
-2. **ML-based scoring.** Once enough labeled (converted vs. lost) leads are logged.
-3. **Stale-lead recovery sweep.** Scheduled job that flags leads stuck mid-funnel and notifies a manager.
-4. **Post-payment automation.** Invoice generation, onboarding email with credentials.
-5. **Real-time dashboard.** Manager view of pipeline health, conversion by source/language.
-6. **Deferred items from the [2026-06-23 audit](audit-2026-06-23.md).** Known gaps, deliberately not fixed now - same "concrete need, not preemptively" rule as above:
-   - **Persistent payment idempotency.** `_processed_payments` is an in-memory set; a process restart clears it. Move to the Sheet (or a `Payments` tab) when restart-during-payment-window actually happens, not before.
-   - **Config-driven adapter wiring.** Mock/real adapters are still chosen by editing `app/main.py` directly; no YAML/`pydantic-settings` loader yet. Add one when there's more than one deployment target to wire, not for a single demo/prod pair.
-   - **Full HTTP-level test refactor with `TestClient`.** `tests/test_webhooks.py` calls route functions directly rather than through FastAPI's request/response cycle, so routing, request parsing, and response-model serialization aren't exercised. Worth doing once the webhook surface stabilizes enough that the refactor cost is paid once, not on every endpoint change.
+1. **ML-based scoring.** Once enough labeled (converted vs. lost) leads are logged.
+2. **Stale-lead recovery sweep.** ✅ Done (durability sprint): reconciler loop runs every 30s.
+3. **Post-payment automation.** Invoice generation, onboarding email with credentials.
+4. **Real-time dashboard.** Manager view of pipeline health, conversion by source/language.
+5. **Deferred items from the [2026-06-23 audit](audit-2026-06-23.md)** — resolved in durability sprint:
+   - ✅ **Persistent payment idempotency.** `record_processed_webhook` uses DB unique-constraint INSERT.
+   - ✅ **Config-driven adapter wiring.** `pydantic-settings` in `app/config.py` loads DATABASE_URL, WEBHOOK_SIGNING_SECRET, BOLNA_WEBHOOK_SECRET.
+   - ✅ **Full HTTP-level test refactor with `TestClient`.** `tests/test_webhooks.py` and `tests/test_durability.py` use TestClient throughout.
+   - ✅ **HMAC signature verification.** Both webhooks signed + replay window enforced.
+   - ✅ **State-machine guards.** `transitions.py` enforces all LeadStatus moves.
+
+**Remaining deferred work (not in scope of durability sprint):**
+- **Structured logging / metrics.** Replace `log()` with a structured logger and add Prometheus-compatible counters for pipeline throughput and outreach latency.
+- **PII policy.** Define and implement retention, masking, and deletion policy for lead PII (name, phone, email, raw_notes).
+- **Postgres migration.** When SQLite WAL mode hits throughput limits; migrations already abstract DB-specific features via SQLAlchemy (no raw SQL).
+- **Real task queue.** When `asyncio.BackgroundTasks + reconciler` proves insufficient at scale; drop-in replacement for `run_outreach_durable` with ARQ or similar.
+- **Bolna webhook signing.** Confirm Bolna's outbound HMAC scheme against their docs and adjust `verify_signature()` accordingly.
 
 ## 14. Open questions
 
