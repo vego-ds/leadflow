@@ -17,6 +17,8 @@ from pydantic import BaseModel
 from app.adapters.dialer import MockDialer
 from app.adapters.sheets import InMemorySheet
 from app.adapters.whatsapp import MockEmail, MockWhatsApp
+from app.models import Lead
+from app.pipeline.conversion import handle_payment
 from app.pipeline.ingest import validate_and_normalize
 from app.pipeline.outreach import run_outreach
 from app.pipeline.scoring import score_lead
@@ -27,6 +29,10 @@ app = FastAPI(title="LeadFlow", version="0.1.0")
 store = InMemorySheet()
 dialer, email, whatsapp = MockDialer(simulate_delay=False), MockEmail(), MockWhatsApp()
 
+# Sheet rows are flattened dicts, so the payment webhook needs a way back to a
+# live Lead object to run conversion logic against. Demo-only registry.
+leads: dict[str, Lead] = {}
+
 
 class NewLead(BaseModel):
     name: str
@@ -35,6 +41,11 @@ class NewLead(BaseModel):
     source: str = "manual"
     email: str | None = None
     raw_notes: str = ""
+
+
+class PaymentEvent(BaseModel):
+    lead_id: str
+    payment_id: str
 
 
 @app.get("/health")
@@ -49,7 +60,19 @@ def new_lead(payload: NewLead):
     if lead is None:
         return {"accepted": False, "reason": "quarantined - see Needs Review"}
 
+    leads[lead.lead_id] = lead
     run_outreach(lead, store, dialer, email, whatsapp)
     score_lead(lead, store)
     return {"accepted": True, "lead_id": lead.lead_id, "status": lead.status.value,
             "score": lead.score}
+
+
+@app.post("/webhook/payment")
+def payment(payload: PaymentEvent):
+    """Payment provider notifies us a lead has paid. Idempotent per payment_id."""
+    lead = leads.get(payload.lead_id)
+    if lead is None:
+        return {"accepted": False, "reason": "unknown lead_id"}
+
+    handle_payment(lead, payload.payment_id, store)
+    return {"accepted": True, "lead_id": lead.lead_id, "status": lead.status.value}
