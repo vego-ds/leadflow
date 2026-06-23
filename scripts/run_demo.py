@@ -16,11 +16,9 @@ from app.adapters.dialer import MockDialer
 from app.adapters.sheets import InMemorySheet
 from app.adapters.whatsapp import MockEmail, MockWhatsApp
 from app.models import LeadStatus
-from app.pipeline.booking import assign_counselor
 from app.pipeline.conversion import handle_payment, mark_lost
 from app.pipeline.ingest import validate_and_normalize
-from app.pipeline.outreach import run_outreach
-from app.pipeline.scoring import score_lead
+from app.pipeline.outreach import handle_call_result, run_outreach
 from app.utils.logging import log
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -46,9 +44,8 @@ def main():
             log(f"[QUARANTINED] {row.get('name', '?')}")
             continue
 
-        run_outreach(lead, store, dialer, email, whatsapp)
-        score_lead(lead, store)
-        assign_counselor(lead, store)
+        outcome = run_outreach(lead, store, dialer, email, whatsapp)
+        handle_call_result(lead, outcome.result, outcome.needs_captured, store)
 
         # --- Human zone is simulated below for the demo only ---
         # Two leads convert, one is lost; the rest stop at Assigned.
