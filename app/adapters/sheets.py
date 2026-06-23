@@ -22,6 +22,7 @@ class InMemorySheet(SheetStore):
         self.counselors: list[dict] = []     # Counselors tab
         self.events: list[dict] = []         # Events tab
         self._event_seq = 0
+        self._processed_webhooks: set[tuple[str, str]] = set()
 
     def seed_counselors(self, roster: list[dict]) -> None:
         """Load the starting counselor roster. Demo/startup use only."""
@@ -78,6 +79,13 @@ class InMemorySheet(SheetStore):
                 self.counselors[i] = counselor
                 return
 
+    def record_processed_webhook(self, webhook_type: str, external_id: str) -> bool:
+        key = (webhook_type, external_id)
+        if key in self._processed_webhooks:
+            return False
+        self._processed_webhooks.add(key)
+        return True
+
 
 class GoogleSheet(SheetStore):
     """
@@ -111,4 +119,7 @@ class GoogleSheet(SheetStore):
         raise NotImplementedError("GoogleSheet is a stub. Wire up gspread here.")
 
     def update_counselor(self, counselor: dict) -> None:
+        raise NotImplementedError("GoogleSheet is a stub. Wire up gspread here.")
+
+    def record_processed_webhook(self, webhook_type: str, external_id: str) -> bool:
         raise NotImplementedError("GoogleSheet is a stub. Wire up gspread here.")

@@ -53,3 +53,11 @@ class SheetStore(ABC):
 
     @abstractmethod
     def update_counselor(self, counselor: dict) -> None: ...
+
+    @abstractmethod
+    def record_processed_webhook(self, webhook_type: str, external_id: str) -> bool:
+        """Atomically record (webhook_type, external_id) as processed.
+
+        Returns True if this is the first time (caller should proceed).
+        Returns False if it is a duplicate (caller should skip).
+        """

@@ -1,7 +1,12 @@
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.6
+pydantic-settings>=2.2
 pytest>=8.0
+sqlalchemy[asyncio]>=2.0
+aiosqlite>=0.20
+alembic>=1.13
+httpx2>=0.28          # required by starlette.testclient (Python 3.14+)
 
 # Real integrations (not needed for the mock demo):
 # gspread>=6.0            # Google Sheets
