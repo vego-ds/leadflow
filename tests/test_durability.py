@@ -563,3 +563,100 @@ class TestReconcilerReplay:
         assert "stale01" in scheduled, (
             f"Expected stale01 to be re-scheduled, got: {scheduled}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Graceful shutdown — reconciler-loop task lifecycle + drain_inflight
+# ---------------------------------------------------------------------------
+
+class TestLifespanShutdown:
+    def test_reconciler_loop_task_named_and_cancelled_on_exit(self, tmp_path, monkeypatch):
+        """The lifespan context manager starts a task named 'reconciler-loop'
+        that is running while the app is up, and is cancelled/done once the
+        `async with lifespan(app):` block exits."""
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'lifespan.db'}"
+
+        import app.db.engine as engine_module
+        import sqlalchemy.ext.asyncio as sa_async
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "database_url", db_url)
+        new_engine = sa_async.create_async_engine(db_url)
+        new_session = sa_async.async_sessionmaker(new_engine, expire_on_commit=False)
+        monkeypatch.setattr(engine_module, "engine", new_engine)
+        monkeypatch.setattr(engine_module, "async_session", new_session)
+
+        async def _run():
+            import app.main as main_module
+
+            async with main_module.lifespan(main_module.app):
+                # Let the freshly-created task actually start running.
+                await asyncio.sleep(0.05)
+                task = main_module._reconciler_task
+                assert task is not None
+                assert task.get_name() == "reconciler-loop"
+                assert not task.done()
+
+            # Outside the block: lifespan's finally has cancelled + awaited it.
+            assert task.done()
+            assert task.cancelled()
+
+        asyncio.run(_run())
+
+    def test_drain_inflight_waits_for_pending_tasks(self):
+        """drain_inflight should await slow in-flight outreach coroutines
+        rather than returning immediately."""
+        from app.reconciler import _inflight_outreach, drain_inflight
+
+        _inflight_outreach.clear()
+        results: list[str] = []
+
+        async def _slow() -> None:
+            await asyncio.sleep(0.05)
+            results.append("done")
+
+        async def _run() -> None:
+            task = asyncio.create_task(_slow(), name="outreach-slow01")
+            _inflight_outreach.add(task)
+            task.add_done_callback(_inflight_outreach.discard)
+
+            await drain_inflight(timeout=1.0)
+            await asyncio.sleep(0)  # let the done-callback flush
+
+        try:
+            asyncio.run(_run())
+            assert results == ["done"], "drain_inflight returned before the task finished"
+            assert _inflight_outreach == set()
+        finally:
+            _inflight_outreach.clear()
+
+    def test_drain_inflight_respects_short_timeout(self):
+        """drain_inflight must not block exit past its timeout window, even
+        if a worker task is still pending."""
+        from app.reconciler import _inflight_outreach, drain_inflight
+
+        _inflight_outreach.clear()
+
+        async def _run() -> float:
+            async def _hangs() -> None:
+                await asyncio.sleep(5)
+
+            task = asyncio.create_task(_hangs(), name="outreach-hang01")
+            _inflight_outreach.add(task)
+            task.add_done_callback(_inflight_outreach.discard)
+
+            start = time.monotonic()
+            await drain_inflight(timeout=0.1)
+            elapsed = time.monotonic() - start
+
+            # Explicit cleanup: the task is still pending after the timeout,
+            # so cancel it directly rather than leaking it into other tests.
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            return elapsed
+
+        try:
+            elapsed = asyncio.run(_run())
+            assert elapsed < 1.0, "drain_inflight blocked past its timeout window"
+        finally:
+            _inflight_outreach.clear()

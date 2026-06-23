@@ -201,6 +201,7 @@ Triggered by concrete need, not preemptively:
 - **Postgres migration.** When SQLite WAL mode hits throughput limits; migrations already abstract DB-specific features via SQLAlchemy (no raw SQL).
 - **Real task queue.** When `asyncio.BackgroundTasks + reconciler` proves insufficient at scale; drop-in replacement for `run_outreach_durable` with ARQ or similar.
 - **Bolna webhook signing.** Confirm Bolna's outbound HMAC scheme against their docs and adjust `verify_signature()` accordingly.
+- **BackgroundTasks thread/engine isolation on SIGTERM.** `/webhook/new-lead` outreach runs in FastAPI's `BackgroundTasks` thread pool via its own `asyncio.run()`, sharing the global SQLAlchemy engine with the main event loop. A SIGTERM mid-flight can drop that thread's session out from under `dispose_engine()`. This is a known, explicitly deferred gap — not fixed by the lifespan graceful-shutdown refactor (which only covers the reconciler-owned task tree). It is bounded by the existing reconciler-on-restart recovery design: any lead left in `IN_PROGRESS` is picked up and retried after `STALE_THRESHOLD_MINUTES`, so the failure mode is a delayed retry, not data loss.
 
 ## 14. Open questions
 

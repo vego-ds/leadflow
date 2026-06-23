@@ -26,6 +26,8 @@ RECONCILER_INTERVAL_SECONDS = 30
 STALE_THRESHOLD_MINUTES = 2
 MAX_ATTEMPTS = 5
 
+_inflight_outreach: set[asyncio.Task] = set()
+
 
 async def reconcile_outreach() -> None:
     """Loop forever, re-scheduling stale outreach leads every 30 seconds."""
@@ -61,4 +63,29 @@ async def _reconcile_once() -> None:
     from app.pipeline.outreach_durable import run_outreach_durable  # noqa: PLC0415
 
     for lead_row in stale_leads:
-        asyncio.create_task(run_outreach_durable(lead_row.lead_id))
+        task = asyncio.create_task(
+            run_outreach_durable(lead_row.lead_id),
+            name=f"outreach-{lead_row.lead_id}",
+        )
+        _inflight_outreach.add(task)
+        task.add_done_callback(_inflight_outreach.discard)
+
+
+async def drain_inflight(timeout: float = 10.0) -> None:
+    """Wait for in-flight outreach workers spawned by the reconciler to
+    finish their DB transactions before the engine is disposed.
+
+    Bounded by `timeout` so shutdown never hangs on a stuck worker — any
+    still-pending tasks are left to the reconciler-on-restart recovery path.
+    """
+    if not _inflight_outreach:
+        return
+
+    pending = list(_inflight_outreach)
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        remaining = len(_inflight_outreach)
+        log(f"[reconciler] drain_inflight timed out with {remaining} task(s) still pending")

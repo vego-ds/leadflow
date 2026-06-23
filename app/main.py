@@ -42,7 +42,7 @@ from app.pipeline.ingest import validate_and_normalize
 from app.pipeline.outreach import run_outreach
 from app.pipeline.outreach_durable import run_outreach_durable
 from app.pipeline.transitions import IllegalTransition, set_status
-from app.reconciler import reconcile_outreach
+from app.reconciler import drain_inflight, reconcile_outreach
 from app.security.webhook_auth import require_signed_webhook
 
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
@@ -60,11 +60,17 @@ def _run_pending_migrations() -> None:
 async def lifespan(app: FastAPI):
     global _reconciler_task
     await asyncio.to_thread(_run_pending_migrations)
-    _reconciler_task = asyncio.create_task(reconcile_outreach())
-    yield
-    if _reconciler_task is not None:
-        _reconciler_task.cancel()
-    await dispose_engine()
+    _reconciler_task = asyncio.create_task(reconcile_outreach(), name="reconciler-loop")
+    try:
+        yield
+    finally:
+        # Resource-freeing order: stop new work, drain in-flight work,
+        # then tear down the engine everything else depends on.
+        if _reconciler_task is not None:
+            _reconciler_task.cancel()
+            await asyncio.gather(_reconciler_task, return_exceptions=True)
+        await drain_inflight(timeout=10.0)
+        await dispose_engine()
 
 
 app = FastAPI(title="LeadFlow", version="0.1.0", lifespan=lifespan)
