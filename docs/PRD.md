@@ -187,6 +187,10 @@ Triggered by concrete need, not preemptively:
 3. **Stale-lead recovery sweep.** Scheduled job that flags leads stuck mid-funnel and notifies a manager.
 4. **Post-payment automation.** Invoice generation, onboarding email with credentials.
 5. **Real-time dashboard.** Manager view of pipeline health, conversion by source/language.
+6. **Deferred items from the [2026-06-23 audit](audit-2026-06-23.md).** Known gaps, deliberately not fixed now - same "concrete need, not preemptively" rule as above:
+   - **Persistent payment idempotency.** `_processed_payments` is an in-memory set; a process restart clears it. Move to the Sheet (or a `Payments` tab) when restart-during-payment-window actually happens, not before.
+   - **Config-driven adapter wiring.** Mock/real adapters are still chosen by editing `app/main.py` directly; no YAML/`pydantic-settings` loader yet. Add one when there's more than one deployment target to wire, not for a single demo/prod pair.
+   - **Full HTTP-level test refactor with `TestClient`.** `tests/test_webhooks.py` calls route functions directly rather than through FastAPI's request/response cycle, so routing, request parsing, and response-model serialization aren't exercised. Worth doing once the webhook surface stabilizes enough that the refactor cost is paid once, not on every endpoint change.
 
 ## 14. Open questions
 
