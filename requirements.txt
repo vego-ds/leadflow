@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+pytest>=8.0
+
+# Real integrations (not needed for the mock demo):
+# gspread>=6.0            # Google Sheets
+# google-auth>=2.29       # Sheets auth
+# requests>=2.31          # Bolna / payment APIs

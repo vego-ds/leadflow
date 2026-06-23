@@ -1,0 +1,23 @@
+# LeadFlow configuration (example).
+# The demo runs entirely on mock adapters - no credentials required.
+# Flip these to the real implementations when going live.
+
+adapters:
+  sheet: in_memory      # in_memory | google_sheet
+  dialer: mock          # mock | bolna
+  email: mock           # mock | smtp
+  whatsapp: mock        # mock | whatsapp_business
+
+outreach:
+  attachments:
+    - brochure.pdf
+    - class_schedule.pdf
+    - why_us.pdf
+
+languages:
+  - en
+  - hi
+  - te
+  - kn
+  - ta
+  - ml

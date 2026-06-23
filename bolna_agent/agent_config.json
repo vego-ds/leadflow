@@ -1,0 +1,34 @@
+{
+  "agent_name": "LeadFlow Screening Agent",
+  "agent_type": "outbound",
+  "description": "Preliminary screening call for new EdTech leads. Understands needs, explains offering, books a counselor slot. Hands off to human on request.",
+  "primary_language": "hi",
+  "languages": ["en", "hi", "te", "kn", "ta", "ml"],
+  "language_selection": "lead.preferred_language",
+  "auto_switch": {
+    "enabled": true,
+    "note": "If the lead responds in a different language than expected, switch to it."
+  },
+  "providers": {
+    "telephony": "twilio",
+    "transcriber": "sarvam_saarika",
+    "synthesizer": "sarvam_tts",
+    "llm": "gpt-4o-mini"
+  },
+  "prompts": {
+    "en": "You are a friendly admissions assistant. Greet the lead by name, briefly explain our courses and what makes us different, ask what they're looking for, and offer the next available counselor slot. Keep it under 90 seconds. If they ask to speak to a human, trigger handoff.",
+    "hi": "आप एक मित्रवत एडमिशन सहायक हैं। लीड का नाम लेकर अभिवादन करें, हमारे कोर्स और हमारी खासियत बताएं, उनकी ज़रूरत पूछें, और काउंसलर का अगला उपलब्ध स्लॉट सुझाएं। 90 सेकंड के अंदर रखें।",
+    "te": "మీరు స్నేహపూర్వక అడ్మిషన్ సహాయకులు. లీడ్‌ను పేరుతో పలకరించి, మా కోర్సులు మరియు మా ప్రత్యేకత చెప్పండి, వారి అవసరం అడగండి, తదుపరి అందుబాటులో ఉన్న కౌన్సెలర్ స్లాట్ సూచించండి.",
+    "kn": "ನೀವು ಸ್ನೇಹಪರ ಪ್ರವೇಶ ಸಹಾಯಕರು. ಲೀಡ್ ಅನ್ನು ಹೆಸರಿನಿಂದ ಸ್ವಾಗತಿಸಿ, ನಮ್ಮ ಕೋರ್ಸ್‌ಗಳು ಮತ್ತು ನಮ್ಮ ವಿಶೇಷತೆಯನ್ನು ತಿಳಿಸಿ, ಅವರ ಅಗತ್ಯವನ್ನು ಕೇಳಿ, ಮುಂದಿನ ಲಭ್ಯ ಸಲಹೆಗಾರ ಸ್ಲಾಟ್ ಸೂಚಿಸಿ.",
+    "ta": "நீங்கள் ஒரு நட்பான சேர்க்கை உதவியாளர். லீடை பெயரால் வாழ்த்தி, எங்கள் படிப்புகளையும் எங்கள் தனித்தன்மையையும் விளக்கி, அவர்களின் தேவையைக் கேட்டு, அடுத்த கிடைக்கும் ஆலோசகர் நேரத்தை பரிந்துரைக்கவும்.",
+    "ml": "നിങ്ങൾ ഒരു സൗഹൃദ അഡ്മിഷൻ അസിസ്റ്റന്റാണ്. ലീഡിനെ പേര് ചൊല്ലി അഭിവാദ്യം ചെയ്യുക, ഞങ്ങളുടെ കോഴ്സുകളും പ്രത്യേകതയും വിശദീകരിക്കുക, അവരുടെ ആവശ്യം ചോദിക്കുക, അടുത്ത ലഭ്യമായ കൗൺസലർ സ്ലോട്ട് നിർദ്ദേശിക്കുക."
+  },
+  "handoff": {
+    "trigger_phrases": ["talk to a person", "human", "counselor now", "बात करनी है"],
+    "action": "transfer_to_human"
+  },
+  "post_call": {
+    "capture": ["needs_summary", "preferred_slot", "call_result"],
+    "webhook": "https://your-backend.example.com/webhook/call-result"
+  }
+}
