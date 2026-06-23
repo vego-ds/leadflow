@@ -13,7 +13,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-from app.models import Lead
+from app.models import CallResult, Language, Lead, LeadStatus, Source
 
 
 class SheetStore(ABC):
@@ -22,6 +22,9 @@ class SheetStore(ABC):
 
     @abstractmethod
     def update_lead(self, lead: Lead) -> None: ...
+
+    @abstractmethod
+    def get_lead(self, lead_id: str) -> Lead | None: ...
 
     @abstractmethod
     def quarantine(self, row: dict, error: str) -> None: ...
@@ -43,6 +46,28 @@ class InMemorySheet(SheetStore):
     def update_lead(self, lead: Lead) -> None:
         lead.last_updated = datetime.utcnow().isoformat()
         self.leads[lead.lead_id] = lead.to_row()
+
+    def get_lead(self, lead_id: str) -> Lead | None:
+        row = self.leads.get(lead_id)
+        if row is None:
+            return None
+        return Lead(
+            lead_id=row["lead_id"],
+            name=row["name"],
+            phone=row["phone"],
+            preferred_language=Language(row["preferred_language"]),
+            source=Source(row["source"]),
+            email=row["email"],
+            raw_notes=row["raw_notes"],
+            status=LeadStatus(row["status"]),
+            score=row["score"],
+            assigned_counselor=row["assigned_counselor"],
+            counselor_slot=row["counselor_slot"],
+            call_result=CallResult(row["call_result"]) if row["call_result"] else None,
+            needs_captured=row["needs_captured"],
+            timestamp_created=row["timestamp_created"],
+            last_updated=row["last_updated"],
+        )
 
     def quarantine(self, row: dict, error: str) -> None:
         self.needs_review.append({**row, "validation_error": error})
@@ -75,6 +100,9 @@ class GoogleSheet(SheetStore):
         raise NotImplementedError("GoogleSheet is a stub. Wire up gspread here.")
 
     def update_lead(self, lead: Lead) -> None:
+        raise NotImplementedError
+
+    def get_lead(self, lead_id: str) -> Lead | None:
         raise NotImplementedError
 
     def quarantine(self, row: dict, error: str) -> None:

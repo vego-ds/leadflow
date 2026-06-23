@@ -1,10 +1,10 @@
 """Webhook layer tests. Run: pytest"""
 from app.main import NewLead, PaymentEvent, new_lead, payment
+from tests.test_pipeline import _good_row
 
 
 def _good_lead():
-    return NewLead(name="Test User", phone="+919876543210", email="t@example.com",
-                   source="website", preferred_language="hi", raw_notes="x")
+    return NewLead(**_good_row())
 
 
 def test_payment_webhook_converts_known_lead():
