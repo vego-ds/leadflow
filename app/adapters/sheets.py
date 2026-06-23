@@ -10,35 +10,23 @@ The pipeline only depends on the SheetStore interface, so swapping is clean.
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from datetime import datetime
 
+from app.adapters.base import SheetStore
 from app.models import CallResult, Language, Lead, LeadStatus, Source
-
-
-class SheetStore(ABC):
-    @abstractmethod
-    def append_lead(self, lead: Lead) -> None: ...
-
-    @abstractmethod
-    def update_lead(self, lead: Lead) -> None: ...
-
-    @abstractmethod
-    def get_lead(self, lead_id: str) -> Lead | None: ...
-
-    @abstractmethod
-    def quarantine(self, row: dict, error: str) -> None: ...
-
-    @abstractmethod
-    def log_event(self, lead_id: str, event_type: str, details: str = "") -> None: ...
 
 
 class InMemorySheet(SheetStore):
     def __init__(self):
         self.leads: dict[str, dict] = {}     # Leads tab
         self.needs_review: list[dict] = []   # Needs Review tab
+        self.counselors: list[dict] = []     # Counselors tab
         self.events: list[dict] = []         # Events tab
         self._event_seq = 0
+
+    def seed_counselors(self, roster: list[dict]) -> None:
+        """Load the starting counselor roster. Demo/startup use only."""
+        self.counselors = roster
 
     def append_lead(self, lead: Lead) -> None:
         self.leads[lead.lead_id] = lead.to_row()
@@ -82,6 +70,15 @@ class InMemorySheet(SheetStore):
             "details": details,
         })
 
+    def get_counselors(self) -> list[dict]:
+        return self.counselors
+
+    def update_counselor(self, counselor: dict) -> None:
+        for i, existing in enumerate(self.counselors):
+            if existing["name"] == counselor["name"]:
+                self.counselors[i] = counselor
+                return
+
 
 class GoogleSheet(SheetStore):
     """
@@ -110,3 +107,9 @@ class GoogleSheet(SheetStore):
 
     def log_event(self, lead_id: str, event_type: str, details: str = "") -> None:
         raise NotImplementedError
+
+    def get_counselors(self) -> list[dict]:
+        raise NotImplementedError("GoogleSheet is a stub. Wire up gspread here.")
+
+    def update_counselor(self, counselor: dict) -> None:
+        raise NotImplementedError("GoogleSheet is a stub. Wire up gspread here.")

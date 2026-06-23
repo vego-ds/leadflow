@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from app.models import CallResult, Language
+from app.models import CallResult, Language, Lead
 
 
 @dataclass
@@ -30,3 +30,26 @@ class Messenger(ABC):
     @abstractmethod
     def send(self, to: str, language: Language, attachments: list[str]) -> bool:
         """Send a message (email or whatsapp) with attachments. Returns success."""
+
+
+class SheetStore(ABC):
+    @abstractmethod
+    def append_lead(self, lead: Lead) -> None: ...
+
+    @abstractmethod
+    def update_lead(self, lead: Lead) -> None: ...
+
+    @abstractmethod
+    def get_lead(self, lead_id: str) -> Lead | None: ...
+
+    @abstractmethod
+    def quarantine(self, row: dict, error: str) -> None: ...
+
+    @abstractmethod
+    def log_event(self, lead_id: str, event_type: str, details: str = "") -> None: ...
+
+    @abstractmethod
+    def get_counselors(self) -> list[dict]: ...
+
+    @abstractmethod
+    def update_counselor(self, counselor: dict) -> None: ...

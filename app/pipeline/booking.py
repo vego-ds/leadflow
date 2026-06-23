@@ -6,7 +6,7 @@ Falls back to any available counselor if no language match exists.
 """
 from __future__ import annotations
 
-from app.adapters.sheets import SheetStore
+from app.adapters.base import SheetStore
 from app.models import Lead, LeadStatus
 
 

@@ -7,7 +7,7 @@ lead is never double-converted.
 """
 from __future__ import annotations
 
-from app.adapters.sheets import SheetStore
+from app.adapters.base import SheetStore
 from app.models import Lead, LeadStatus
 
 _processed_payments: set[str] = set()

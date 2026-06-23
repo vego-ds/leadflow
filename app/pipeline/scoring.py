@@ -11,7 +11,7 @@ Signals:
 """
 from __future__ import annotations
 
-from app.adapters.sheets import SheetStore
+from app.adapters.base import SheetStore
 from app.models import CallResult, Lead, Source
 
 _SOURCE_WEIGHT = {

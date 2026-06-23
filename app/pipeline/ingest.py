@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import uuid
 
-from app.adapters.sheets import SheetStore
+from app.adapters.base import SheetStore
 from app.models import Language, Lead, LeadStatus, Source
 
 _PHONE_RE = re.compile(r"^\+?\d{10,13}$")

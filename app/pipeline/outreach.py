@@ -7,7 +7,7 @@ The screening result from the call is captured here and carried forward.
 from __future__ import annotations
 
 from app.adapters.base import Dialer, Messenger
-from app.adapters.sheets import SheetStore
+from app.adapters.base import SheetStore
 from app.models import Lead, LeadStatus
 
 # Default attachments shared with every lead.
