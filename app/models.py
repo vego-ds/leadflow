@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
 from enum import Enum
 from typing import Optional
+
+from app.utils.time import now_utc_iso
 
 
 class LeadStatus(str, Enum):
@@ -57,8 +58,8 @@ class Lead:
     counselor_slot: Optional[str] = None
     call_result: Optional[CallResult] = None
     needs_captured: str = ""
-    timestamp_created: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    last_updated: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp_created: str = field(default_factory=now_utc_iso)
+    last_updated: str = field(default_factory=now_utc_iso)
 
     def to_row(self) -> dict:
         """Flatten to a Sheet row (enums -> their string values)."""

@@ -10,10 +10,9 @@ The pipeline only depends on the SheetStore interface, so swapping is clean.
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 from app.adapters.base import SheetStore
 from app.models import CallResult, Language, Lead, LeadStatus, Source
+from app.utils.time import now_utc_iso
 
 
 class InMemorySheet(SheetStore):
@@ -32,7 +31,7 @@ class InMemorySheet(SheetStore):
         self.leads[lead.lead_id] = lead.to_row()
 
     def update_lead(self, lead: Lead) -> None:
-        lead.last_updated = datetime.utcnow().isoformat()
+        lead.last_updated = now_utc_iso()
         self.leads[lead.lead_id] = lead.to_row()
 
     def get_lead(self, lead_id: str) -> Lead | None:
@@ -65,7 +64,7 @@ class InMemorySheet(SheetStore):
         self.events.append({
             "event_id": self._event_seq,
             "lead_id": lead_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc_iso(),
             "event_type": event_type,
             "details": details,
         })

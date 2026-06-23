@@ -1,8 +1,8 @@
 """Minimal structured-ish logging. Keeps the demo readable in the console."""
 from __future__ import annotations
 
-from datetime import datetime
+from app.utils.time import now_utc
 
 
 def log(message: str) -> None:
-    print(f"{datetime.utcnow().strftime('%H:%M:%S')}  {message}")
+    print(f"{now_utc().strftime('%H:%M:%S')}  {message}")
