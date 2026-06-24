@@ -8,3 +8,5 @@ credentials.json
 *.log
 .pytest_cache/
 .DS_Store
+leadflow.db
+migrations/__pycache__/
