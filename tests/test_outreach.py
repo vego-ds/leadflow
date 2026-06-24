@@ -228,6 +228,48 @@ def test_cancelled_error_in_call_channel_propagates():
 
 
 # ---------------------------------------------------------------------------
+# run_outreach: permanent_error classification, wired into the except blocks
+# ---------------------------------------------------------------------------
+
+def test_transient_error_leaves_permanent_error_false():
+    store = InMemorySheet()
+    lead = _make_lead()
+
+    result = run_outreach(
+        lead, store, _FakeDialer(), _FakeMessenger(error=TimeoutError("connection slow")), _FakeMessenger()
+    )
+
+    assert result.permanent_error == False
+    failed = _events_for(store, lead.lead_id, "email_failed")
+    assert "[transient]" in failed[0]["details"]
+
+
+def test_permanent_error_sets_permanent_error_true():
+    store = InMemorySheet()
+    lead = _make_lead()
+
+    result = run_outreach(
+        lead, store, _FakeDialer(), _FakeMessenger(), _FakeMessenger(error=ValueError("invalid phone"))
+    )
+
+    assert result.permanent_error == True
+    failed = _events_for(store, lead.lead_id, "whatsapp_failed")
+    assert "[permanent]" in failed[0]["details"]
+
+
+def test_one_permanent_error_takes_precedence_over_other_successes():
+    store = InMemorySheet()
+    lead = _make_lead()
+
+    result = run_outreach(
+        lead, store, _FakeDialer(), _FakeMessenger(error=ValueError("invalid address")), _FakeMessenger()
+    )
+
+    assert result.permanent_error == True
+    assert result.channel_successes == {"whatsapp", "call"}
+
+
+# ---------------------------------------------------------------------------
 # run_outreach_durable: outreach_state contract (no DB — claim/mark stubbed)
 # ---------------------------------------------------------------------------
 
@@ -393,7 +435,7 @@ def test_email_failure_logs_exception_type_and_message():
 
     failed = _events_for(store, lead.lead_id, "email_failed")
     assert len(failed) == 1
-    assert failed[0]["details"] == "ValueError: invalid address"
+    assert failed[0]["details"] == "ValueError: invalid address [permanent]"
 
 
 def test_durable_outreach_logs_full_lifecycle_when_all_channels_succeed(_stub_db_layer):

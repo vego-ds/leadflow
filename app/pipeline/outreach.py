@@ -2,13 +2,14 @@
 Stage 2 - Outreach: fire the call, email and WhatsApp within seconds of arrival.
 
 Each channel — email, WhatsApp, voice call — succeeds or fails independently:
-a failure is caught and logged as a `<channel>_failed` event (with the
-exception type and message), a success as `<channel>_sent`, and neither
-blocks the others. run_outreach's job ends at firing them; it does not score
-or book. handle_call_result() picks up from there, but only when the call
-itself produced a real outcome — a failed call clears call_result rather
-than fabricating one, and the lead falls through to the reconciler /
-human-zone path instead of being screened.
+a failure is caught and logged as a `<channel>_failed` event (exception type,
+message, and a [permanent]/[transient] classification via
+_is_permanent_error), a success as `<channel>_sent`, and neither blocks the
+others. run_outreach's job ends at firing them; it does not score or book.
+handle_call_result() picks up from there, but only when the call itself
+produced a real outcome — a failed call clears call_result rather than
+fabricating one, and the lead falls through to the reconciler / human-zone
+path instead of being screened.
 """
 from __future__ import annotations
 
@@ -76,6 +77,7 @@ def run_outreach(
     """
     channel_failures: set[str] = set()
     channel_successes: set[str] = set()
+    permanent_error = False
 
     # Each channel below catches broadly — but never BaseException, so
     # asyncio.CancelledError still propagates — so one channel's failure can
@@ -87,7 +89,11 @@ def run_outreach(
                 store.log_event(lead.lead_id, "email_sent")
         except Exception as exc:  # noqa: BLE001
             channel_failures.add("email")
-            store.log_event(lead.lead_id, "email_failed", f"{type(exc).__name__}: {exc}")
+            is_permanent = _is_permanent_error(exc)
+            if is_permanent:
+                permanent_error = True
+            error_tag = "[permanent]" if is_permanent else "[transient]"
+            store.log_event(lead.lead_id, "email_failed", f"{type(exc).__name__}: {exc} {error_tag}")
 
     try:
         if whatsapp.send(lead.phone, lead.preferred_language, DEFAULT_ATTACHMENTS):
@@ -95,7 +101,11 @@ def run_outreach(
             store.log_event(lead.lead_id, "whatsapp_sent")
     except Exception as exc:  # noqa: BLE001
         channel_failures.add("whatsapp")
-        store.log_event(lead.lead_id, "whatsapp_failed", f"{type(exc).__name__}: {exc}")
+        is_permanent = _is_permanent_error(exc)
+        if is_permanent:
+            permanent_error = True
+        error_tag = "[permanent]" if is_permanent else "[transient]"
+        store.log_event(lead.lead_id, "whatsapp_failed", f"{type(exc).__name__}: {exc} {error_tag}")
 
     try:
         outcome = dialer.call(lead.phone, lead.preferred_language, lead.name)
@@ -105,14 +115,21 @@ def run_outreach(
         store.log_event(lead.lead_id, "call_sent", f"result={outcome.result.value}")
     except Exception as exc:  # noqa: BLE001
         channel_failures.add("call")
-        store.log_event(lead.lead_id, "call_failed", f"{type(exc).__name__}: {exc}")
+        is_permanent = _is_permanent_error(exc)
+        if is_permanent:
+            permanent_error = True
+        error_tag = "[permanent]" if is_permanent else "[transient]"
+        store.log_event(lead.lead_id, "call_failed", f"{type(exc).__name__}: {exc} {error_tag}")
         # Don't fabricate a screening outcome — leave it unset so the lead
         # falls through to the reconciler / human-zone path instead.
         lead.call_result = None
         lead.needs_captured = ""
 
     return OutreachResult(
-        lead=lead, channel_failures=channel_failures, channel_successes=channel_successes
+        lead=lead,
+        channel_failures=channel_failures,
+        channel_successes=channel_successes,
+        permanent_error=permanent_error,
     )
 
 
