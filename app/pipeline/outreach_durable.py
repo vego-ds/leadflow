@@ -20,19 +20,24 @@ outreach_state lifecycle:
 
 run_outreach()'s channels (email/WhatsApp/call) each succeed or fail
 independently (see app/pipeline/outreach.py) — a single channel failing is
-not a reason to retry the whole lead. Only two things mark this attempt
-FAILED-or-retry: run_outreach() itself raising (a real bug or infra
-failure), or zero channels succeeding (outreach achieved nothing — this
-also covers a no-email lead whose remaining channels both failed, which
-could never reach a literal "all three failed" check).
+not a reason to retry the whole lead. After an attempt completes, three
+outcomes are possible: a permanent error on any channel quarantines the
+lead to Needs Review (terminal — no retry, since the data itself is bad);
+otherwise zero channels succeeding retries (outreach achieved nothing —
+this also covers a no-email lead whose remaining channels both failed,
+which could never reach a literal "all three failed" check); otherwise at
+least one channel succeeded and the attempt is marked done. Separately,
+run_outreach() itself raising (a real bug or infra failure) always retries,
+regardless of permanent/transient — that's an unhandled bug, not a
+classified channel error.
 
 Events log lifecycle for one attempt (the audit trail — see
 app/pipeline/outreach.py for the per-channel *_sent/*_failed events nested
 inside it): outreach_attempt_started -> email_sent/email_failed ->
 whatsapp_sent/whatsapp_failed -> call_sent/call_failed ->
-outreach_attempt_completed -> (outreach_retry_scheduled OR
-outreach_complete). A raised exception instead logs
-outreach_attempt_failed and always retries.
+outreach_attempt_completed -> (outreach_quarantined OR
+outreach_retry_scheduled OR outreach_complete). A raised exception instead
+logs outreach_attempt_failed and always retries.
 
 IMPORTANT: run_outreach_durable is an async function. The sync pipeline
 functions (run_outreach, handle_call_result) are called via
@@ -127,10 +132,19 @@ async def run_outreach_durable(
             f"channel_successes={sorted(channel_successes)}, channel_failures={sorted(channel_failures)}",
         )
 
-        # Outreach achieved nothing only if no channel succeeded — that's
-        # the one case the reconciler should retry. One working channel
-        # still counts as a successful attempt.
-        if not channel_successes:
+        if result.permanent_error:
+            # Permanent error — quarantine to Needs Review, don't retry.
+            await _log_event("outreach_quarantined", "permanent error detected")
+            await asyncio.to_thread(
+                store.quarantine,
+                lead.to_row(),
+                f"Outreach failed with permanent error: {', '.join(sorted(channel_failures))}",
+            )
+            log(f"[outreach_durable] {lead_id}: permanent error — quarantined")
+        elif not channel_successes:
+            # Outreach achieved nothing — that's the one case the reconciler
+            # should retry. One working channel still counts as a successful
+            # attempt.
             log(f"[outreach_durable] {lead_id}: no channel succeeded — retrying")
             attempts = await _mark_failed_or_retry(lead_id)
             await _log_event("outreach_retry_scheduled", f"attempt={attempts}")

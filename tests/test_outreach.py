@@ -476,6 +476,45 @@ def test_durable_outreach_logs_retry_scheduled_when_no_email_and_remaining_fail(
     assert actual == expected
 
 
+def test_durable_outreach_quarantines_on_permanent_error(_stub_db_layer):
+    """A permanent error on any channel quarantines the lead instead of
+    retrying — bad data won't fix itself on a reconciler retry."""
+    lead = _make_lead("quarantine01")
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store, dialer=_FakeDialer(), whatsapp=_FakeMessenger(),
+        email=_FakeMessenger(error=ValueError("invalid address")),
+    ))
+
+    assert _stub_db_layer["failed_or_retry"] == []
+    assert _stub_db_layer["done"] == []
+    assert len(store.needs_review) == 1
+    quarantined = store.needs_review[0]
+    assert quarantined["lead_id"] == lead.lead_id
+    assert quarantined["validation_error"] == "Outreach failed with permanent error: email"
+    assert _events_for(store, lead.lead_id, "outreach_quarantined")
+
+
+def test_durable_outreach_transient_error_still_retries_not_quarantines(_stub_db_layer):
+    """A transient error never quarantines — it goes through the existing
+    zero-successes retry path."""
+    lead = _make_lead("quarantine02")
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store,
+        dialer=_FakeDialer(error=RuntimeError("dialer down")),
+        email=_FakeMessenger(error=RuntimeError("smtp down")),
+        whatsapp=_FakeMessenger(error=RuntimeError("wa api down")),
+    ))
+
+    assert _stub_db_layer["failed_or_retry"] == [lead.lead_id]
+    assert _stub_db_layer["done"] == []
+    assert store.needs_review == []
+    assert not _events_for(store, lead.lead_id, "outreach_quarantined")
+
+
 def test_durable_outreach_attempt_completed_event_reflects_partial_success(_stub_db_layer):
     lead = _make_lead("lifecycle03")
     store = _store_with_lead_and_counselor(lead)
