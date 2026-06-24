@@ -20,6 +20,21 @@ from app.models import CallResult, Language, Lead, LeadStatus, Source
 from app.pipeline.outreach import run_outreach
 from app.pipeline.outreach_durable import run_outreach_durable
 
+
+# ---------------------------------------------------------------------------
+# _is_permanent_error: classification only — not wired into run_outreach yet
+# ---------------------------------------------------------------------------
+
+def test_error_classification():
+    """_is_permanent_error correctly classifies common exceptions."""
+    from app.pipeline.outreach import _is_permanent_error
+
+    assert _is_permanent_error(ValueError("bad format")) == True
+    assert _is_permanent_error(TypeError("wrong type")) == True
+    assert _is_permanent_error(TimeoutError("slow")) == False
+    assert _is_permanent_error(ConnectionError("network")) == False
+    assert _is_permanent_error(RuntimeError("unknown")) == False  # Default to transient
+
 # ---------------------------------------------------------------------------
 # Helpers and fakes
 # ---------------------------------------------------------------------------

@@ -23,11 +23,40 @@ from app.pipeline.scoring import score_lead
 DEFAULT_ATTACHMENTS = ["brochure.pdf", "class_schedule.pdf", "why_us.pdf"]
 
 
+def _is_permanent_error(exc: Exception) -> bool:
+    """Classify an exception as permanent (quarantine-worthy) or transient (retry-worthy).
+
+    Permanent: validation, type, auth errors that indicate bad input data.
+    Transient: network, timeout, rate limit errors that may succeed on retry.
+    Default: transient (safe — reconciler will retry; human will notice if stuck).
+    """
+    exc_type = type(exc).__name__
+    exc_msg = str(exc).lower()
+
+    # Permanent errors — bad data or auth.
+    permanent_types = {"ValueError", "ValidationError", "TypeError", "PermissionError"}
+    if exc_type in permanent_types:
+        return True
+    if "403" in exc_msg or "401" in exc_msg or "unauthorized" in exc_msg:
+        return True
+
+    # Transient errors — network/infra issues.
+    transient_types = {"TimeoutError", "ConnectionError"}
+    if exc_type in transient_types:
+        return False
+    if "429" in exc_msg or "too many requests" in exc_msg.lower():
+        return False
+
+    # Default to transient (safe).
+    return False
+
+
 @dataclass
 class OutreachResult:
     lead: Lead
     channel_failures: set[str]    # subset of {"email", "whatsapp", "call"}
     channel_successes: set[str]   # subset of {"email", "whatsapp", "call"}
+    permanent_error: bool = False  # True if any channel hit a permanent error
 
 
 def run_outreach(
