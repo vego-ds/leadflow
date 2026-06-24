@@ -22,7 +22,9 @@ run_outreach()'s channels (email/WhatsApp/call) each succeed or fail
 independently (see app/pipeline/outreach.py) — a single channel failing is
 not a reason to retry the whole lead. Only two things mark this attempt
 FAILED-or-retry: run_outreach() itself raising (a real bug or infra
-failure), or every channel failing (outreach achieved nothing).
+failure), or zero channels succeeding (outreach achieved nothing — this
+also covers a no-email lead whose remaining channels both failed, which
+could never reach a literal "all three failed" check).
 
 IMPORTANT: run_outreach_durable is an async function. The sync pipeline
 functions (run_outreach, handle_call_result) are called via
@@ -95,21 +97,23 @@ async def run_outreach_durable(
 
     # --- Run outreach in a thread (avoids asyncio.run-inside-running-loop) -
     try:
-        from app.pipeline.outreach import handle_call_result, run_outreach
+        from app.pipeline.outreach import OutreachResult, handle_call_result, run_outreach
 
-        def _do_outreach() -> set[str]:
+        def _do_outreach() -> OutreachResult:
             result = run_outreach(lead, store, dialer, email, whatsapp)
             if "call" not in result.channel_failures:
                 handle_call_result(lead, lead.call_result, lead.needs_captured, store)
-            return result.channel_failures
+            return result
 
-        channel_failures = await loop.run_in_executor(None, _do_outreach)
+        result = await loop.run_in_executor(None, _do_outreach)
+        channel_failures = result.channel_failures
+        channel_successes = result.channel_successes
 
-        # Outreach achieved nothing only if every channel failed — that's
+        # Outreach achieved nothing only if no channel succeeded — that's
         # the one case the reconciler should retry. One working channel
         # still counts as a successful attempt.
-        if channel_failures == {"email", "whatsapp", "call"}:
-            log(f"[outreach_durable] {lead_id}: all channels failed — retrying")
+        if not channel_successes:
+            log(f"[outreach_durable] {lead_id}: no channel succeeded — retrying")
             await _mark_failed_or_retry(lead_id)
         else:
             await _mark_done(lead_id)

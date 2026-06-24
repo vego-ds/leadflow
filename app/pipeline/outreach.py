@@ -25,7 +25,8 @@ DEFAULT_ATTACHMENTS = ["brochure.pdf", "class_schedule.pdf", "why_us.pdf"]
 @dataclass
 class OutreachResult:
     lead: Lead
-    channel_failures: set[str]  # subset of {"email", "whatsapp", "call"}
+    channel_failures: set[str]    # subset of {"email", "whatsapp", "call"}
+    channel_successes: set[str]   # subset of {"email", "whatsapp", "call"}
 
 
 def run_outreach(
@@ -38,21 +39,29 @@ def run_outreach(
     """Fire email, WhatsApp, and the screening call, each independently.
 
     A failure in one channel never blocks or skips the others. Returns the
-    lead plus which channels (if any) failed; handle_call_result() does the
-    scoring and booking that follows, but only when the call succeeded.
+    lead plus which channels succeeded/failed; handle_call_result() does the
+    scoring and booking that follows, but only when the call succeeded. A
+    channel that was never attempted (e.g. no email on file) lands in
+    neither set — skipped is not the same as failed.
     """
     channel_failures: set[str] = set()
+    channel_successes: set[str] = set()
 
+    # Each channel below catches broadly — but never BaseException, so
+    # asyncio.CancelledError still propagates — so one channel's failure can
+    # never block or skip the others.
     if lead.email:
         try:
             if email.send(lead.email, lead.preferred_language, DEFAULT_ATTACHMENTS):
+                channel_successes.add("email")
                 store.log_event(lead.lead_id, "email_sent")
-        except Exception as exc:  # noqa: BLE001 — one channel's failure must not block the others
+        except Exception as exc:  # noqa: BLE001
             channel_failures.add("email")
             store.log_event(lead.lead_id, "email_failed", str(exc))
 
     try:
         if whatsapp.send(lead.phone, lead.preferred_language, DEFAULT_ATTACHMENTS):
+            channel_successes.add("whatsapp")
             store.log_event(lead.lead_id, "whatsapp_sent")
     except Exception as exc:  # noqa: BLE001
         channel_failures.add("whatsapp")
@@ -62,6 +71,7 @@ def run_outreach(
         outcome = dialer.call(lead.phone, lead.preferred_language, lead.name)
         lead.call_result = outcome.result
         lead.needs_captured = outcome.needs_captured
+        channel_successes.add("call")
     except Exception as exc:  # noqa: BLE001
         channel_failures.add("call")
         store.log_event(lead.lead_id, "call_failed", str(exc))
@@ -70,7 +80,9 @@ def run_outreach(
         lead.call_result = None
         lead.needs_captured = ""
 
-    return OutreachResult(lead=lead, channel_failures=channel_failures)
+    return OutreachResult(
+        lead=lead, channel_failures=channel_failures, channel_successes=channel_successes
+    )
 
 
 def handle_call_result(

@@ -144,7 +144,43 @@ def test_all_channels_failing_reports_all_three():
     )
 
     assert result.channel_failures == {"email", "whatsapp", "call"}
+    assert result.channel_successes == set()
     assert result.lead.call_result is None
+
+
+def test_no_email_lead_with_whatsapp_and_call_failing_has_no_successes():
+    """Email is skipped (no address), not failed — it must land in neither
+    set, while WhatsApp and call both genuinely failing leaves zero
+    successes overall."""
+    store = InMemorySheet()
+    lead = _make_lead()
+    lead.email = None
+
+    result = run_outreach(
+        lead, store,
+        _FakeDialer(error=RuntimeError("dialer down")),
+        _FakeMessenger(),
+        _FakeMessenger(error=RuntimeError("wa api down")),
+    )
+
+    assert result.channel_successes == set()
+    assert result.channel_failures == {"whatsapp", "call"}
+
+
+def test_no_email_lead_with_whatsapp_succeeding_has_one_success():
+    store = InMemorySheet()
+    lead = _make_lead()
+    lead.email = None
+
+    result = run_outreach(
+        lead, store,
+        _FakeDialer(error=RuntimeError("dialer down")),
+        _FakeMessenger(),
+        _FakeMessenger(),
+    )
+
+    assert result.channel_successes == {"whatsapp"}
+    assert result.channel_failures == {"call"}
 
 
 def test_cancelled_error_in_email_channel_propagates():
@@ -285,3 +321,38 @@ def test_durable_outreach_retries_when_all_channels_fail(_stub_db_layer):
 
     assert _stub_db_layer["failed_or_retry"] == [lead.lead_id]
     assert _stub_db_layer["done"] == []
+
+
+def test_durable_outreach_retries_when_no_email_and_remaining_channels_fail(_stub_db_layer):
+    """A no-email lead can never accumulate 3 channel_failures (email is
+    skipped, not failed) — the retry decision must key off zero successes,
+    not a literal {"email", "whatsapp", "call"} failure set."""
+    lead = _make_lead("durable06")
+    lead.email = None
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store,
+        dialer=_FakeDialer(error=RuntimeError("dialer down")),
+        email=_FakeMessenger(),
+        whatsapp=_FakeMessenger(error=RuntimeError("wa api down")),
+    ))
+
+    assert _stub_db_layer["failed_or_retry"] == [lead.lead_id]
+    assert _stub_db_layer["done"] == []
+
+
+def test_durable_outreach_marks_done_when_no_email_but_whatsapp_succeeds(_stub_db_layer):
+    lead = _make_lead("durable07")
+    lead.email = None
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store,
+        dialer=_FakeDialer(error=RuntimeError("dialer down")),
+        email=_FakeMessenger(),
+        whatsapp=_FakeMessenger(),
+    ))
+
+    assert _stub_db_layer["done"] == [lead.lead_id]
+    assert _stub_db_layer["failed_or_retry"] == []
