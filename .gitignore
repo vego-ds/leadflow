@@ -5,6 +5,7 @@ venv/
 .env
 config/config.yaml
 credentials.json
+leadflow-500419-7e60018536d3.json
 *.log
 .pytest_cache/
 .DS_Store

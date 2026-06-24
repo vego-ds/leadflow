@@ -46,6 +46,7 @@ from app.pipeline.outreach_durable import run_outreach_durable
 from app.pipeline.transitions import IllegalTransition, set_status
 from app.reconciler import drain_inflight, reconcile_outreach
 from app.security.webhook_auth import require_signed_webhook
+from app.utils.logging import log
 
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
@@ -62,6 +63,15 @@ def _run_pending_migrations() -> None:
 async def lifespan(app: FastAPI):
     global _reconciler_task
     await asyncio.to_thread(_run_pending_migrations)
+    # Eager credentials check — only at real startup (tests monkeypatch this
+    # lifespan to a no-op), so a bad/missing creds file degrades to DB-only
+    # instead of silently failing on every Sheets write thereafter.
+    if isinstance(store, ProjectionStore) and store._sheet is not None:
+        try:
+            await asyncio.to_thread(store._sheet._connect)
+        except Exception as exc:  # noqa: BLE001 — bad creds must not block startup
+            log(f"[main] GoogleSheet credentials failed to load, falling back to DB only: {exc}")
+            store._sheet = None
     _reconciler_task = asyncio.create_task(reconcile_outreach(), name="reconciler-loop")
     try:
         yield
@@ -80,8 +90,11 @@ app = FastAPI(title="LeadFlow", version="0.1.0", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # Adapters — DbStore is always the system of record. GoogleSheet mirrors
-# writes only when both credentials are configured; otherwise ProjectionStore
-# behaves as DbStore alone. Tests override `store` directly with InMemorySheet.
+# writes only when both credentials are configured; lifespan() (below)
+# eagerly validates the credentials at real startup and falls back to
+# DB-only if they don't load. Tests override `store` directly with
+# InMemorySheet and monkeypatch lifespan to a no-op, so neither this nor the
+# eager check ever makes a real network call during tests.
 # ---------------------------------------------------------------------------
 
 def _build_store() -> SheetStore:

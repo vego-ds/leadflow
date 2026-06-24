@@ -589,6 +589,12 @@ class TestLifespanShutdown:
         async def _run():
             import app.main as main_module
 
+            # lifespan() eagerly validates the Sheets adapter's credentials
+            # if one is configured on `store` — force it off so this test
+            # never makes a real network call, regardless of what's in the
+            # local .env on whatever machine runs the suite.
+            monkeypatch.setattr(main_module.store, "_sheet", None)
+
             async with main_module.lifespan(main_module.app):
                 # Let the freshly-created task actually start running.
                 await asyncio.sleep(0.05)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -118,16 +119,21 @@ class GoogleSheet(SheetStore):
     COUNSELORS_TAB = "Counselors"
     EVENTS_TAB = "Events"
 
+    # Column order must match the real Sheet's header row exactly — writes
+    # are positional (append_row/update by column letter), not header-driven.
     LEAD_COLUMNS = (
-        "lead_id", "name", "phone", "preferred_language", "source", "email",
-        "raw_notes", "status", "score", "assigned_counselor", "counselor_slot",
-        "call_result", "needs_captured", "timestamp_created", "last_updated",
+        "lead_id", "timestamp_created", "name", "phone", "email", "source",
+        "preferred_language", "raw_notes", "status", "score",
+        "assigned_counselor", "counselor_slot", "call_result",
+        "needs_captured", "last_updated",
     )
-    NEEDS_REVIEW_COLUMNS = (
-        "name", "phone", "preferred_language", "source", "email", "raw_notes",
-        "validation_error",
-    )
+    # Needs Review mirrors the full Leads layout plus a trailing
+    # validation_error column (it's quarantine, not just a pre-ingest list).
+    NEEDS_REVIEW_COLUMNS = LEAD_COLUMNS + ("validation_error",)
+    # Column A (counselor_id) is sheet-managed; the app has no counselor_id
+    # concept (counselors are identified by name) — writes skip column A.
     COUNSELOR_COLUMNS = ("name", "languages_spoken", "available_slots", "current_load")
+    COUNSELOR_NAME_COL = 2
 
     _SCOPES = (
         "https://www.googleapis.com/auth/spreadsheets",
@@ -232,7 +238,10 @@ class GoogleSheet(SheetStore):
     # ------------------------------------------------------------------
 
     def log_event(self, lead_id: str, event_type: str, details: str = "") -> None:
-        self._event_buffer.append([lead_id, now_utc_iso(), event_type, details])
+        # event_id is a uuid (not a local counter) so it stays unique across
+        # process restarts — nothing here persists a sequence across runs.
+        event_id = uuid.uuid4().hex
+        self._event_buffer.append([event_id, lead_id, now_utc_iso(), event_type, details])
         stale = time.monotonic() - self._last_flush >= self.EVENT_FLUSH_INTERVAL_SECONDS
         if len(self._event_buffer) >= self.EVENT_BUFFER_MAX or stale:
             self._flush_events()
@@ -277,7 +286,7 @@ class GoogleSheet(SheetStore):
     def update_counselor(self, counselor: dict) -> None:
         try:
             worksheet = self._worksheet(self.COUNSELORS_TAB)
-            names = worksheet.col_values(1)
+            names = worksheet.col_values(self.COUNSELOR_NAME_COL)
             row_index = next(
                 (i for i, name in enumerate(names, start=1) if name == counselor["name"]),
                 None,
@@ -291,8 +300,9 @@ class GoogleSheet(SheetStore):
                 ",".join(counselor.get("available_slots", [])),
                 counselor.get("current_load", 0),
             ]
-            last_col = _column_letter(len(self.COUNSELOR_COLUMNS))
-            worksheet.update(f"A{row_index}:{last_col}{row_index}", [values])
+            start_col = _column_letter(self.COUNSELOR_NAME_COL)
+            end_col = _column_letter(self.COUNSELOR_NAME_COL + len(self.COUNSELOR_COLUMNS) - 1)
+            worksheet.update(f"{start_col}{row_index}:{end_col}{row_index}", [values])
         except gspread.exceptions.APIError as exc:
             log(f"[sheets] update_counselor failed for {counselor.get('name')}: {exc}")
 
