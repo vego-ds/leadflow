@@ -279,7 +279,7 @@ def _stub_db_layer(monkeypatch):
     SQLAlchemy, and record what run_outreach_durable decided to do."""
     import app.pipeline.outreach_durable as od
 
-    calls = {"done": [], "failed_or_retry": []}
+    calls = {"done": [], "failed_or_retry": [], "quarantined": []}
 
     async def _claim_lead(lead_id, now):
         return True
@@ -291,9 +291,13 @@ def _stub_db_layer(monkeypatch):
         calls["failed_or_retry"].append(lead_id)
         return 1
 
+    async def _mark_quarantined(lead_id):
+        calls["quarantined"].append(lead_id)
+
     monkeypatch.setattr(od, "_claim_lead", _claim_lead)
     monkeypatch.setattr(od, "_mark_done", _mark_done)
     monkeypatch.setattr(od, "_mark_failed_or_retry", _mark_failed_or_retry)
+    monkeypatch.setattr(od, "_mark_quarantined", _mark_quarantined)
     return calls
 
 
@@ -496,6 +500,24 @@ def test_durable_outreach_quarantines_on_permanent_error(_stub_db_layer):
     assert _events_for(store, lead.lead_id, "outreach_quarantined")
 
 
+def test_durable_outreach_sets_quarantined_status_on_permanent_error(_stub_db_layer):
+    """When a lead is quarantined due to permanent error, _mark_quarantined
+    is called so the reconciler (which only sweeps PENDING/IN_PROGRESS)
+    won't re-attempt it."""
+    lead = _make_lead("quarantine_status01")
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store, dialer=_FakeDialer(),
+        email=_FakeMessenger(error=ValueError("invalid address")),
+        whatsapp=_FakeMessenger(),
+    ))
+
+    assert _stub_db_layer["quarantined"] == [lead.lead_id]
+    assert _stub_db_layer["done"] == []
+    assert _stub_db_layer["failed_or_retry"] == []
+
+
 def test_durable_outreach_transient_error_still_retries_not_quarantines(_stub_db_layer):
     """A transient error never quarantines — it goes through the existing
     zero-successes retry path."""
@@ -511,6 +533,7 @@ def test_durable_outreach_transient_error_still_retries_not_quarantines(_stub_db
 
     assert _stub_db_layer["failed_or_retry"] == [lead.lead_id]
     assert _stub_db_layer["done"] == []
+    assert _stub_db_layer["quarantined"] == []
     assert store.needs_review == []
     assert not _events_for(store, lead.lead_id, "outreach_quarantined")
 

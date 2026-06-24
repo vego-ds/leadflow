@@ -18,6 +18,7 @@ class LeadStatus(str, Enum):
     PAYMENT_LINK_SENT = "PaymentLinkSent"
     CONVERTED = "Converted"         # payment received, pipeline ends
     LOST = "Lost"                   # can branch off any stage
+    QUARANTINED = "Quarantined"      # Terminal — bad data, human must fix
 
 
 class Source(str, Enum):

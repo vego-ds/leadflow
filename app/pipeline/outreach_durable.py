@@ -17,6 +17,8 @@ outreach_state lifecycle:
     IN_PROGRESS   — a worker has claimed this lead (outreach_started_at set)
     DONE          — outreach completed: at least one channel succeeded
     FAILED        — exhausted MAX_ATTEMPTS (needs human review)
+    QUARANTINED   — permanent error; lead sent to Needs Review (terminal,
+                    the reconciler only sweeps PENDING/IN_PROGRESS)
 
 run_outreach()'s channels (email/WhatsApp/call) each succeed or fail
 independently (see app/pipeline/outreach.py) — a single channel failing is
@@ -140,6 +142,7 @@ async def run_outreach_durable(
                 lead.to_row(),
                 f"Outreach failed with permanent error: {', '.join(sorted(channel_failures))}",
             )
+            await _mark_quarantined(lead_id)
             log(f"[outreach_durable] {lead_id}: permanent error — quarantined")
         elif not channel_successes:
             # Outreach achieved nothing — that's the one case the reconciler
@@ -214,6 +217,25 @@ async def _mark_done(lead_id: str) -> None:
                 update(LeadRow)
                 .where(LeadRow.lead_id == lead_id)
                 .values(outreach_state="DONE")
+            )
+            await session.commit()
+
+    await run_db_async(_mark())
+
+
+async def _mark_quarantined(lead_id: str) -> None:
+    """Mark a lead as quarantined — terminal state, the reconciler won't
+    pick it up again (it only sweeps PENDING/IN_PROGRESS)."""
+    from sqlalchemy import update  # noqa: PLC0415
+    from app.db.engine import run_db_async  # noqa: PLC0415
+
+    async def _mark() -> None:
+        import app.db.engine as engine_module  # noqa: PLC0415
+        async with engine_module.async_session() as session:
+            await session.execute(
+                update(LeadRow)
+                .where(LeadRow.lead_id == lead_id)
+                .values(outreach_state="QUARANTINED")
             )
             await session.commit()
 
