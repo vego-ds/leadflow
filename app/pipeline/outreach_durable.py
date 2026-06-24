@@ -26,6 +26,14 @@ failure), or zero channels succeeding (outreach achieved nothing — this
 also covers a no-email lead whose remaining channels both failed, which
 could never reach a literal "all three failed" check).
 
+Events log lifecycle for one attempt (the audit trail — see
+app/pipeline/outreach.py for the per-channel *_sent/*_failed events nested
+inside it): outreach_attempt_started -> email_sent/email_failed ->
+whatsapp_sent/whatsapp_failed -> call_sent/call_failed ->
+outreach_attempt_completed -> (outreach_retry_scheduled OR
+outreach_complete). A raised exception instead logs
+outreach_attempt_failed and always retries.
+
 IMPORTANT: run_outreach_durable is an async function. The sync pipeline
 functions (run_outreach, handle_call_result) are called via
 asyncio.get_event_loop().run_in_executor so they run in a thread, off
@@ -95,7 +103,13 @@ async def run_outreach_durable(
         await _mark_done(lead_id)
         return
 
+    async def _log_event(event_type: str, details: str = "") -> None:
+        # store.log_event is sync (see app/adapters/db_store.py) — dispatch it
+        # off the event loop, same as every other store call in this function.
+        await loop.run_in_executor(None, store.log_event, lead_id, event_type, details)
+
     # --- Run outreach in a thread (avoids asyncio.run-inside-running-loop) -
+    await _log_event("outreach_attempt_started")
     try:
         from app.pipeline.outreach import OutreachResult, handle_call_result, run_outreach
 
@@ -108,19 +122,27 @@ async def run_outreach_durable(
         result = await loop.run_in_executor(None, _do_outreach)
         channel_failures = result.channel_failures
         channel_successes = result.channel_successes
+        await _log_event(
+            "outreach_attempt_completed",
+            f"channel_successes={sorted(channel_successes)}, channel_failures={sorted(channel_failures)}",
+        )
 
         # Outreach achieved nothing only if no channel succeeded — that's
         # the one case the reconciler should retry. One working channel
         # still counts as a successful attempt.
         if not channel_successes:
             log(f"[outreach_durable] {lead_id}: no channel succeeded — retrying")
-            await _mark_failed_or_retry(lead_id)
+            attempts = await _mark_failed_or_retry(lead_id)
+            await _log_event("outreach_retry_scheduled", f"attempt={attempts}")
         else:
             await _mark_done(lead_id)
+            await _log_event("outreach_complete")
             log(f"[outreach_durable] {lead_id}: outreach DONE (channel_failures={sorted(channel_failures)})")
     except Exception as exc:  # noqa: BLE001
+        await _log_event("outreach_attempt_failed", f"{type(exc).__name__}: {exc}")
         log(f"[outreach_durable] {lead_id}: outreach FAILED — {exc}")
-        await _mark_failed_or_retry(lead_id)
+        attempts = await _mark_failed_or_retry(lead_id)
+        await _log_event("outreach_retry_scheduled", f"attempt={attempts}")
 
 
 # ---------------------------------------------------------------------------
@@ -184,22 +206,24 @@ async def _mark_done(lead_id: str) -> None:
     await run_db_async(_mark())
 
 
-async def _mark_failed_or_retry(lead_id: str) -> None:
+async def _mark_failed_or_retry(lead_id: str) -> int:
     """On failure: reset to PENDING for reconciler retry, or set FAILED after
-    MAX_ATTEMPTS exhausted."""
+    MAX_ATTEMPTS exhausted. Returns the attempt count, for the caller's
+    outreach_retry_scheduled log event."""
     from app.db.engine import run_db_async  # noqa: PLC0415
 
-    async def _mark() -> None:
+    async def _mark() -> int:
         import app.db.engine as engine_module  # noqa: PLC0415
         async with engine_module.async_session() as session:
             row = await session.get(LeadRow, lead_id)
             if row is None:
-                return
+                return 0
             if row.outreach_attempts >= MAX_ATTEMPTS:
                 row.outreach_state = "FAILED"
                 log(f"[outreach_durable] {lead_id}: max attempts reached → FAILED")
             else:
                 row.outreach_state = "PENDING"
             await session.commit()
+            return row.outreach_attempts
 
-    await run_db_async(_mark())
+    return await run_db_async(_mark())

@@ -44,6 +44,11 @@ def _events_for(store: InMemorySheet, lead_id: str, event_type: str) -> list[dic
     ]
 
 
+def _event_types_for(store: InMemorySheet, lead_id: str) -> list[str]:
+    """Ordered event_type sequence for one lead, as logged."""
+    return [e["event_type"] for e in store.events if e["lead_id"] == lead_id]
+
+
 class _FakeMessenger(Messenger):
     """Succeeds normally; raises `error` on send() if given one."""
 
@@ -227,6 +232,7 @@ def _stub_db_layer(monkeypatch):
 
     async def _mark_failed_or_retry(lead_id):
         calls["failed_or_retry"].append(lead_id)
+        return 1
 
     monkeypatch.setattr(od, "_claim_lead", _claim_lead)
     monkeypatch.setattr(od, "_mark_done", _mark_done)
@@ -356,3 +362,74 @@ def test_durable_outreach_marks_done_when_no_email_but_whatsapp_succeeds(_stub_d
 
     assert _stub_db_layer["done"] == [lead.lead_id]
     assert _stub_db_layer["failed_or_retry"] == []
+
+
+# ---------------------------------------------------------------------------
+# Step-level logging: attempt boundaries + consistent call_sent/call_failed
+# ---------------------------------------------------------------------------
+
+def test_email_failure_logs_exception_type_and_message():
+    """call_failed/email_failed/whatsapp_failed details include the
+    exception type, not just the message — more useful in the Events tab."""
+    store = InMemorySheet()
+    lead = _make_lead()
+
+    run_outreach(lead, store, _FakeDialer(), _FakeMessenger(error=ValueError("invalid address")), _FakeMessenger())
+
+    failed = _events_for(store, lead.lead_id, "email_failed")
+    assert len(failed) == 1
+    assert failed[0]["details"] == "ValueError: invalid address"
+
+
+def test_durable_outreach_logs_full_lifecycle_when_all_channels_succeed(_stub_db_layer):
+    lead = _make_lead("lifecycle01")
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store, dialer=_FakeDialer(), email=_FakeMessenger(), whatsapp=_FakeMessenger()
+    ))
+
+    expected = [
+        "outreach_attempt_started", "email_sent", "whatsapp_sent", "call_sent",
+        "outreach_attempt_completed", "outreach_complete",
+    ]
+    # Filter to just the named steps — scored/counselor_assigned etc. land
+    # in between (from handle_call_result) and aren't part of this contract.
+    actual = [t for t in _event_types_for(store, lead.lead_id) if t in expected]
+    assert actual == expected
+
+
+def test_durable_outreach_logs_retry_scheduled_when_no_email_and_remaining_fail(_stub_db_layer):
+    lead = _make_lead("lifecycle02")
+    lead.email = None
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store,
+        dialer=_FakeDialer(error=RuntimeError("dialer down")),
+        email=_FakeMessenger(),
+        whatsapp=_FakeMessenger(error=RuntimeError("wa api down")),
+    ))
+
+    expected = [
+        "outreach_attempt_started", "whatsapp_failed", "call_failed",
+        "outreach_attempt_completed", "outreach_retry_scheduled",
+    ]
+    actual = [t for t in _event_types_for(store, lead.lead_id) if t in expected]
+    assert actual == expected
+
+
+def test_durable_outreach_attempt_completed_event_reflects_partial_success(_stub_db_layer):
+    lead = _make_lead("lifecycle03")
+    store = _store_with_lead_and_counselor(lead)
+
+    asyncio.run(run_outreach_durable(
+        lead.lead_id, store=store, dialer=_FakeDialer(),
+        email=_FakeMessenger(), whatsapp=_FakeMessenger(error=RuntimeError("wa api down")),
+    ))
+
+    completed = _events_for(store, lead.lead_id, "outreach_attempt_completed")
+    assert len(completed) == 1
+    details = completed[0]["details"]
+    assert "channel_successes=['call', 'email']" in details
+    assert "channel_failures=['whatsapp']" in details
