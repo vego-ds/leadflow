@@ -44,8 +44,9 @@ def main():
             log(f"[QUARANTINED] {row.get('name', '?')}")
             continue
 
-        outcome = run_outreach(lead, store, dialer, email, whatsapp)
-        handle_call_result(lead, outcome.result, outcome.needs_captured, store)
+        result = run_outreach(lead, store, dialer, email, whatsapp)
+        if "call" not in result.channel_failures:
+            handle_call_result(lead, lead.call_result, lead.needs_captured, store)
 
         # --- Human zone is simulated below for the demo only ---
         # Two leads convert, one is lost; the rest stop at Assigned.

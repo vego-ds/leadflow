@@ -15,8 +15,14 @@ that:
 outreach_state lifecycle:
     PENDING       — waiting to be processed
     IN_PROGRESS   — a worker has claimed this lead (outreach_started_at set)
-    DONE          — outreach completed successfully
+    DONE          — outreach completed: at least one channel succeeded
     FAILED        — exhausted MAX_ATTEMPTS (needs human review)
+
+run_outreach()'s channels (email/WhatsApp/call) each succeed or fail
+independently (see app/pipeline/outreach.py) — a single channel failing is
+not a reason to retry the whole lead. Only two things mark this attempt
+FAILED-or-retry: run_outreach() itself raising (a real bug or infra
+failure), or every channel failing (outreach achieved nothing).
 
 IMPORTANT: run_outreach_durable is an async function. The sync pipeline
 functions (run_outreach, handle_call_result) are called via
@@ -91,14 +97,23 @@ async def run_outreach_durable(
     try:
         from app.pipeline.outreach import handle_call_result, run_outreach
 
-        def _do_outreach():
-            outcome = run_outreach(lead, store, dialer, email, whatsapp)
-            handle_call_result(lead, outcome.result, outcome.needs_captured, store)
-            return lead
+        def _do_outreach() -> set[str]:
+            result = run_outreach(lead, store, dialer, email, whatsapp)
+            if "call" not in result.channel_failures:
+                handle_call_result(lead, lead.call_result, lead.needs_captured, store)
+            return result.channel_failures
 
-        await loop.run_in_executor(None, _do_outreach)
-        await _mark_done(lead_id)
-        log(f"[outreach_durable] {lead_id}: outreach DONE")
+        channel_failures = await loop.run_in_executor(None, _do_outreach)
+
+        # Outreach achieved nothing only if every channel failed — that's
+        # the one case the reconciler should retry. One working channel
+        # still counts as a successful attempt.
+        if channel_failures == {"email", "whatsapp", "call"}:
+            log(f"[outreach_durable] {lead_id}: all channels failed — retrying")
+            await _mark_failed_or_retry(lead_id)
+        else:
+            await _mark_done(lead_id)
+            log(f"[outreach_durable] {lead_id}: outreach DONE (channel_failures={sorted(channel_failures)})")
     except Exception as exc:  # noqa: BLE001
         log(f"[outreach_durable] {lead_id}: outreach FAILED — {exc}")
         await _mark_failed_or_retry(lead_id)
