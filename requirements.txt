@@ -7,8 +7,8 @@ sqlalchemy[asyncio]>=2.0
 aiosqlite>=0.20
 alembic>=1.13
 httpx2>=0.28          # required by starlette.testclient (Python 3.14+)
+gspread>=6.0          # Google Sheets adapter (app/adapters/sheets.py::GoogleSheet)
+google-auth>=2.29     # Service-account auth for the Sheets adapter
 
 # Real integrations (not needed for the mock demo):
-# gspread>=6.0            # Google Sheets
-# google-auth>=2.29       # Sheets auth
 # requests>=2.31          # Bolna / payment APIs

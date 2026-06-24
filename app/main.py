@@ -9,8 +9,9 @@ Exposes the webhooks the system reacts to:
 SYSTEM OF RECORD: SQLite via SQLAlchemy async (app/db/). Sheets are a
 human-facing projection only — they are not queried for pipeline decisions.
 
-In the demo these run against the in-memory store with mock adapters.
-Swap InMemorySheet -> DbStore and MockDialer -> BolnaDialer to go live.
+store is a ProjectionStore wrapping DbStore (always) and GoogleSheet
+(only when SPREADSHEET_ID + GOOGLE_CREDS_PATH are both configured).
+scripts/run_demo.py uses InMemorySheet directly and never touches this.
 
 HMAC signing:
   Both /webhook/new-lead and /webhook/call-result require a valid
@@ -32,7 +33,8 @@ from pydantic import BaseModel
 from app.adapters.base import SheetStore
 from app.adapters.db_store import DbStore
 from app.adapters.dialer import MockDialer
-from app.adapters.sheets import InMemorySheet
+from app.adapters.projection_store import ProjectionStore
+from app.adapters.sheets import GoogleSheet
 from app.adapters.whatsapp import MockEmail, MockWhatsApp
 from app.config import settings
 from app.db.engine import dispose_engine
@@ -70,16 +72,29 @@ async def lifespan(app: FastAPI):
             _reconciler_task.cancel()
             await asyncio.gather(_reconciler_task, return_exceptions=True)
         await drain_inflight(timeout=10.0)
+        await store.aclose()
         await dispose_engine()
 
 
 app = FastAPI(title="LeadFlow", version="0.1.0", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
-# Adapters — mock for demo; swap to real implementations for production.
-# DbStore is used as the default store. InMemorySheet stays for unit tests.
+# Adapters — DbStore is always the system of record. GoogleSheet mirrors
+# writes only when both credentials are configured; otherwise ProjectionStore
+# behaves as DbStore alone. Tests override `store` directly with InMemorySheet.
 # ---------------------------------------------------------------------------
-store: SheetStore = InMemorySheet()   # overridden in production via startup
+
+def _build_store() -> SheetStore:
+    db = DbStore()
+    sheet = None
+    if settings.spreadsheet_id and settings.google_creds_path:
+        sheet = GoogleSheet(
+            spreadsheet_id=settings.spreadsheet_id, creds_path=settings.google_creds_path
+        )
+    return ProjectionStore(db, sheet)
+
+
+store: SheetStore = _build_store()
 dialer = MockDialer(simulate_delay=False)
 email = MockEmail()
 whatsapp = MockWhatsApp()
@@ -136,12 +151,23 @@ def health():
     return {"status": "ok"}
 
 
+async def _read_raw_body(request: Request) -> bytes:
+    """Dependency: reads the raw body on the event loop (FastAPI awaits
+    dependencies before dispatching sync routes to the thread pool), so the
+    route function itself can stay a plain `def`. Required because `store`
+    (DbStore/ProjectionStore) bridges to async SQLAlchemy via asyncio.run()
+    per call, which crashes if invoked from a coroutine already running on
+    the event loop — see app/adapters/db_store.py's thread-safety note."""
+    return await request.body()
+
+
 @app.post("/webhook/new-lead")
-async def new_lead(
+def new_lead(
     request: Request,
     payload: NewLead,
     background_tasks: BackgroundTasks,
     response: Response,
+    body: bytes = Depends(_read_raw_body),
 ):
     """Ingest synchronously, then schedule durable outreach.
 
@@ -152,7 +178,6 @@ async def new_lead(
     if settings.webhook_signing_secret:
         sig = request.headers.get("X-LeadFlow-Signature", "")
         ts = request.headers.get("X-LeadFlow-Timestamp", "")
-        body = await request.body()
         from app.security.webhook_auth import verify_signature
         verify_signature(body, sig, ts, settings.webhook_signing_secret)
 
@@ -181,7 +206,11 @@ def _run_outreach_in_background(lead_id: str) -> None:
 
 
 @app.post("/webhook/call-result")
-async def call_result(request: Request, payload: CallResultEvent):
+def call_result(
+    request: Request,
+    payload: CallResultEvent,
+    body: bytes = Depends(_read_raw_body),
+):
     """Bolna's screening callback. Idempotent per call_id.
 
     TODO (Bolna signing): Once Bolna's signing scheme is confirmed against
@@ -193,7 +222,6 @@ async def call_result(request: Request, payload: CallResultEvent):
     if settings.bolna_webhook_secret:
         sig = request.headers.get("X-LeadFlow-Signature", "")
         ts = request.headers.get("X-LeadFlow-Timestamp", "")
-        body = await request.body()
         from app.security.webhook_auth import verify_signature
         verify_signature(body, sig, ts, settings.bolna_webhook_secret)
 

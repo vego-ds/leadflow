@@ -20,8 +20,11 @@ outreach_state lifecycle:
 
 IMPORTANT: run_outreach_durable is an async function. The sync pipeline
 functions (run_outreach, handle_call_result) are called via
-asyncio.get_event_loop().run_in_executor so they can safely call
-asyncio.run() internally (they run in a thread, not the event loop).
+asyncio.get_event_loop().run_in_executor so they run in a thread, off
+whatever loop is driving run_outreach_durable. Their store calls bridge to
+the DB via app.db.engine.run_db(), which funnels onto one dedicated event
+loop — see that module's docstring for why a shared engine can't be touched
+from multiple loops directly.
 """
 from __future__ import annotations
 
@@ -76,7 +79,7 @@ async def run_outreach_durable(
     if whatsapp is None:
         whatsapp = MockWhatsApp()
 
-    # --- Fetch the lead via store in a thread (store methods use asyncio.run) --
+    # --- Fetch the lead via store in a thread (store methods bridge via run_db) --
     loop = asyncio.get_running_loop()
     lead = await loop.run_in_executor(None, store.get_lead, lead_id)
     if lead is None:
@@ -102,65 +105,82 @@ async def run_outreach_durable(
 
 
 # ---------------------------------------------------------------------------
-# Private DB helpers — async, use async_session directly
+# Private DB helpers — bridge to the dedicated DB loop via run_db_async()
 # ---------------------------------------------------------------------------
 
 async def _claim_lead(lead_id: str, now: datetime) -> bool:
     """Atomically set outreach_state=IN_PROGRESS for a PENDING or stale
     IN_PROGRESS lead. Returns True if the claim succeeded."""
     from sqlalchemy import update  # noqa: PLC0415
-    import app.db.engine as engine_module  # noqa: PLC0415
+    from app.db.engine import run_db_async  # noqa: PLC0415
 
     stale_before = now - timedelta(minutes=STALE_THRESHOLD_MINUTES)
 
-    async with engine_module.async_session() as session:
-        result = await session.execute(
-            update(LeadRow)
-            .where(
-                LeadRow.lead_id == lead_id,
-                (
-                    (LeadRow.outreach_state == "PENDING")
-                    | (
-                        (LeadRow.outreach_state == "IN_PROGRESS")
-                        & (LeadRow.outreach_started_at < stale_before)
-                    )
-                ),
+    async def _claim() -> bool:
+        import app.db.engine as engine_module  # noqa: PLC0415 — lazy import for test patching
+        async with engine_module.async_session() as session:
+            result = await session.execute(
+                update(LeadRow)
+                .where(
+                    LeadRow.lead_id == lead_id,
+                    (
+                        (LeadRow.outreach_state == "PENDING")
+                        | (
+                            (LeadRow.outreach_state == "IN_PROGRESS")
+                            & (LeadRow.outreach_started_at < stale_before)
+                        )
+                    ),
+                )
+                .values(
+                    outreach_state="IN_PROGRESS",
+                    outreach_started_at=now,
+                    outreach_attempts=LeadRow.outreach_attempts + 1,
+                )
             )
-            .values(
-                outreach_state="IN_PROGRESS",
-                outreach_started_at=now,
-                outreach_attempts=LeadRow.outreach_attempts + 1,
-            )
-        )
-        await session.commit()
-        return result.rowcount > 0
+            await session.commit()
+            return result.rowcount > 0
+
+    # Funneled through the dedicated DB loop (app/db/engine.py) — this
+    # function runs on whichever loop called run_outreach_durable (the main
+    # loop via the reconciler, or a fresh per-call loop via the BackgroundTask
+    # shim in main.py), either of which would otherwise touch the shared
+    # engine concurrently with another loop and deadlock.
+    return await run_db_async(_claim())
 
 
 async def _mark_done(lead_id: str) -> None:
     from sqlalchemy import update  # noqa: PLC0415
-    import app.db.engine as engine_module  # noqa: PLC0415
+    from app.db.engine import run_db_async  # noqa: PLC0415
 
-    async with engine_module.async_session() as session:
-        await session.execute(
-            update(LeadRow)
-            .where(LeadRow.lead_id == lead_id)
-            .values(outreach_state="DONE")
-        )
-        await session.commit()
+    async def _mark() -> None:
+        import app.db.engine as engine_module  # noqa: PLC0415
+        async with engine_module.async_session() as session:
+            await session.execute(
+                update(LeadRow)
+                .where(LeadRow.lead_id == lead_id)
+                .values(outreach_state="DONE")
+            )
+            await session.commit()
+
+    await run_db_async(_mark())
 
 
 async def _mark_failed_or_retry(lead_id: str) -> None:
     """On failure: reset to PENDING for reconciler retry, or set FAILED after
     MAX_ATTEMPTS exhausted."""
-    import app.db.engine as engine_module  # noqa: PLC0415
+    from app.db.engine import run_db_async  # noqa: PLC0415
 
-    async with engine_module.async_session() as session:
-        row = await session.get(LeadRow, lead_id)
-        if row is None:
-            return
-        if row.outreach_attempts >= MAX_ATTEMPTS:
-            row.outreach_state = "FAILED"
-            log(f"[outreach_durable] {lead_id}: max attempts reached → FAILED")
-        else:
-            row.outreach_state = "PENDING"
-        await session.commit()
+    async def _mark() -> None:
+        import app.db.engine as engine_module  # noqa: PLC0415
+        async with engine_module.async_session() as session:
+            row = await session.get(LeadRow, lead_id)
+            if row is None:
+                return
+            if row.outreach_attempts >= MAX_ATTEMPTS:
+                row.outreach_state = "FAILED"
+                log(f"[outreach_durable] {lead_id}: max attempts reached → FAILED")
+            else:
+                row.outreach_state = "PENDING"
+            await session.commit()
+
+    await run_db_async(_mark())

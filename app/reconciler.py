@@ -43,15 +43,23 @@ async def _reconcile_once() -> None:
     """Single reconciler pass: find and re-schedule stale leads."""
     stale_before = datetime.now(timezone.utc) - timedelta(minutes=STALE_THRESHOLD_MINUTES)
 
-    import app.db.engine as engine_module  # noqa: PLC0415 — lazy import for test patching
-    async with engine_module.async_session() as session:
-        result = await session.execute(
-            select(LeadRow).where(
-                LeadRow.outreach_state.in_(["PENDING", "IN_PROGRESS"]),
-                LeadRow.outreach_started_at < stale_before,
+    async def _query_stale_leads() -> list[LeadRow]:
+        import app.db.engine as engine_module  # noqa: PLC0415 — lazy import for test patching
+        async with engine_module.async_session() as session:
+            result = await session.execute(
+                select(LeadRow).where(
+                    LeadRow.outreach_state.in_(["PENDING", "IN_PROGRESS"]),
+                    LeadRow.outreach_started_at < stale_before,
+                )
             )
-        )
-        stale_leads = result.scalars().all()
+            return list(result.scalars().all())
+
+    # Funneled through the dedicated DB loop (app/db/engine.py) — this
+    # coroutine runs on the main loop (as a task created by reconcile_outreach),
+    # which would otherwise touch the shared engine from a second event loop
+    # concurrently with DbStore's calls and deadlock.
+    from app.db.engine import run_db_async  # noqa: PLC0415
+    stale_leads = await run_db_async(_query_stale_leads())
 
     if not stale_leads:
         return

@@ -12,13 +12,16 @@ GoogleSheet (app/adapters/sheets.py) is a real-integration stub.
 
 Thread-safety note:
     All SheetStore methods are synchronous on the interface. DbStore bridges
-    to async SQLAlchemy by running each coroutine in a fresh asyncio event
-    loop via asyncio.run(). This is correct because:
-    - In FastAPI, sync route functions (and sync BackgroundTask shims) run in
-      a thread pool, so there is no running loop in that thread.
-    - asyncio.run() creates and destroys a loop per call, which is safe.
-    - The SQLAlchemy async engine is safe to use from multiple threads as long
-      as each thread uses its own event loop.
+    to async SQLAlchemy via app.db.engine.run_db(), which submits the
+    coroutine to one dedicated background event loop and blocks for the
+    result. This works from any thread (FastAPI's sync route functions and
+    BackgroundTask shims run in a thread pool, so there's no loop of their
+    own to conflict with). Earlier this used a fresh asyncio.run() per call
+    against the shared engine directly — that deadlocks the instant it runs
+    concurrently with the reconciler (which also touches the engine, on the
+    main loop): two different event loops touching the same async connection
+    pool at once is not safe. run_db() funnels everything through a single
+    loop, removing the cross-loop concurrency entirely.
 
 Design note on async_session import:
     We import app.db.engine lazily (inside each async method) rather than at
@@ -27,12 +30,11 @@ Design note on async_session import:
 """
 from __future__ import annotations
 
-import asyncio
-
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.adapters.base import SheetStore
+from app.db.engine import run_db
 from app.db.models import CounselorRow, EventRow, LeadRow, ProcessedWebhook
 from app.models import CallResult, Language, Lead, LeadStatus, Source
 from app.utils.time import now_utc_iso
@@ -47,8 +49,10 @@ def _get_session():
 class DbStore(SheetStore):
     """Async SQLAlchemy-backed SheetStore.
 
-    Each public method creates and disposes its own asyncio event loop so it
-    is safe to call from any sync context (FastAPI thread pool, scripts, tests).
+    Each public method bridges to async SQLAlchemy via run_db() (see
+    app/db/engine.py), so it is safe to call from any sync context (FastAPI
+    thread pool, scripts, tests) without touching the engine from more than
+    one event loop.
     """
 
     # ------------------------------------------------------------------
@@ -56,7 +60,7 @@ class DbStore(SheetStore):
     # ------------------------------------------------------------------
 
     def append_lead(self, lead: Lead) -> None:
-        asyncio.run(self._append_lead_async(lead))
+        run_db(self._append_lead_async(lead))
 
     async def _append_lead_async(self, lead: Lead) -> None:
         async with _get_session()() as session:
@@ -83,7 +87,7 @@ class DbStore(SheetStore):
             await session.commit()
 
     def update_lead(self, lead: Lead) -> None:
-        asyncio.run(self._update_lead_async(lead))
+        run_db(self._update_lead_async(lead))
 
     async def _update_lead_async(self, lead: Lead) -> None:
         async with _get_session()() as session:
@@ -106,7 +110,7 @@ class DbStore(SheetStore):
             await session.commit()
 
     def get_lead(self, lead_id: str) -> Lead | None:
-        return asyncio.run(self._get_lead_async(lead_id))
+        return run_db(self._get_lead_async(lead_id))
 
     async def _get_lead_async(self, lead_id: str) -> Lead | None:
         async with _get_session()() as session:
@@ -116,7 +120,7 @@ class DbStore(SheetStore):
             return _row_to_lead(row)
 
     def quarantine(self, row: dict, error: str) -> None:
-        asyncio.run(self._quarantine_async(row, error))
+        run_db(self._quarantine_async(row, error))
 
     async def _quarantine_async(self, row: dict, error: str) -> None:
         async with _get_session()() as session:
@@ -129,7 +133,7 @@ class DbStore(SheetStore):
             await session.commit()
 
     def log_event(self, lead_id: str, event_type: str, details: str = "") -> None:
-        asyncio.run(self._log_event_async(lead_id, event_type, details))
+        run_db(self._log_event_async(lead_id, event_type, details))
 
     async def _log_event_async(self, lead_id: str, event_type: str, details: str) -> None:
         async with _get_session()() as session:
@@ -138,7 +142,7 @@ class DbStore(SheetStore):
             await session.commit()
 
     def get_counselors(self) -> list[dict]:
-        return asyncio.run(self._get_counselors_async())
+        return run_db(self._get_counselors_async())
 
     async def _get_counselors_async(self) -> list[dict]:
         async with _get_session()() as session:
@@ -147,7 +151,7 @@ class DbStore(SheetStore):
             return [_counselor_row_to_dict(r) for r in rows]
 
     def update_counselor(self, counselor: dict) -> None:
-        asyncio.run(self._update_counselor_async(counselor))
+        run_db(self._update_counselor_async(counselor))
 
     async def _update_counselor_async(self, counselor: dict) -> None:
         async with _get_session()() as session:
@@ -167,7 +171,7 @@ class DbStore(SheetStore):
         Uses a unique constraint + INSERT to guarantee atomicity even under
         concurrent requests.
         """
-        return asyncio.run(
+        return run_db(
             self._record_processed_webhook_async(webhook_type, external_id)
         )
 
