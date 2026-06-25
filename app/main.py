@@ -38,6 +38,7 @@ from app.adapters.projection_store import ProjectionStore
 from app.adapters.sheets import GoogleSheet
 from app.adapters.whatsapp import MockEmail, MockWhatsApp
 from app.config import settings
+from app.dashboard import get_dashboard_html
 from app.db.engine import dispose_engine
 from app.metrics import REGISTRY, webhook_rejection_total
 from app.models import CallResult, Lead, LeadStatus
@@ -168,9 +169,14 @@ def health():
 
 @app.get("/metrics")
 def metrics():
-    """Prometheus metrics endpoint. Definitions only for now — see
-    app/metrics.py; nothing in the pipeline increments/observes them yet."""
+    """Prometheus metrics endpoint — see app/metrics.py for definitions."""
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/dashboard")
+def dashboard():
+    """LeadFlow pipeline health dashboard — shows metrics via Chart.js."""
+    return Response(get_dashboard_html(), media_type="text/html")
 
 
 async def _read_raw_body(request: Request) -> bytes:
