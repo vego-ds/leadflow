@@ -8,7 +8,7 @@ deletes the row so no test data is left behind in the real spreadsheet.
 
 Requires GOOGLE_CREDS_PATH and SPREADSHEET_ID set in .env.
 
-Run:  python -m scripts.test_live_sheets
+Run:  python -m scripts.check_live_sheets
 """
 from __future__ import annotations
 
