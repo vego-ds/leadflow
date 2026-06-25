@@ -28,6 +28,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from app.adapters.base import SheetStore
@@ -38,6 +39,7 @@ from app.adapters.sheets import GoogleSheet
 from app.adapters.whatsapp import MockEmail, MockWhatsApp
 from app.config import settings
 from app.db.engine import dispose_engine
+from app.metrics import REGISTRY
 from app.models import CallResult, Lead, LeadStatus
 from app.pipeline.conversion import handle_payment
 from app.pipeline.ingest import validate_and_normalize
@@ -162,6 +164,13 @@ class PaymentEvent(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus metrics endpoint. Definitions only for now — see
+    app/metrics.py; nothing in the pipeline increments/observes them yet."""
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 async def _read_raw_body(request: Request) -> bytes:

@@ -9,6 +9,7 @@ alembic>=1.13
 httpx2>=0.28          # required by starlette.testclient (Python 3.14+)
 gspread>=6.0          # Google Sheets adapter (app/adapters/sheets.py::GoogleSheet)
 google-auth>=2.29     # Service-account auth for the Sheets adapter
+prometheus-client>=0.20  # /metrics endpoint (app/metrics.py)
 
 # Real integrations (not needed for the mock demo):
 # requests>=2.31          # Bolna / payment APIs
