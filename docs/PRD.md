@@ -194,9 +194,17 @@ Triggered by concrete need, not preemptively:
    - ✅ **Full HTTP-level test refactor with `TestClient`.** `tests/test_webhooks.py` and `tests/test_durability.py` use TestClient throughout.
    - ✅ **HMAC signature verification.** Both webhooks signed + replay window enforced.
    - ✅ **State-machine guards.** `transitions.py` enforces all LeadStatus moves.
+6. **Outreach hardening sprint** — resolved since durability sprint:
+   - ✅ **Per-channel resilience.** Email/WhatsApp/call each succeed or fail independently; zero-success triggers retry (`3b37c62`, `6cb52cb`).
+   - ✅ **Step-level logging.** Full attempt lifecycle (`outreach_attempt_started` → `*_sent`/`*_failed` → `outreach_attempt_completed` → retry/done/quarantine) audited in the Events tab (`0cc198c`).
+   - ✅ **Smart quarantine.** Permanent errors (bad data) quarantine to Needs Review and mark the lead `QUARANTINED` so the reconciler skips it; transient errors retry (`a5d58bf`, `ede2a40`, `b2886d8`, `8a7d872`).
+   - ✅ **Google Sheets live adapter.** Real `gspread` integration matching the live spreadsheet's column layout, plus startup credential validation that falls back to DB-only on bad creds (`a632208`, `6ba8147`).
+   - ✅ **Integration test suite.** Opt-in (`pytest -m integration`), real-network tests proving the mock → live Sheets swap end-to-end (`1f4e06c`, `3123e42`).
+   - ✅ **Prometheus metrics foundation.** 9 metrics defined, `/metrics` endpoint live (`c9832b8`). Not yet wired into pipeline code — see below.
 
-**Remaining deferred work (not in scope of durability sprint):**
-- **Structured logging / metrics.** Replace `log()` with a structured logger and add Prometheus-compatible counters for pipeline throughput and outreach latency.
+**Remaining deferred work (not in scope of durability or outreach-hardening sprints):**
+- **Wire metrics into pipeline.** Metric definitions and `/metrics` endpoint exist (`c9832b8`); next: increment/observe them during ingest, outreach, webhooks, and conversion.
+- **Structured logging.** Replace `log()` with a structured (JSON) logger and correlation IDs per request/lead.
 - **PII policy.** Define and implement retention, masking, and deletion policy for lead PII (name, phone, email, raw_notes).
 - **Postgres migration.** When SQLite WAL mode hits throughput limits; migrations already abstract DB-specific features via SQLAlchemy (no raw SQL).
 - **Real task queue.** When `asyncio.BackgroundTasks + reconciler` proves insufficient at scale; drop-in replacement for `run_outreach_durable` with ARQ or similar.

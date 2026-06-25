@@ -96,8 +96,20 @@ tests/                 # validation, scoring, idempotency
 
 ## Roadmap
 
+**Done:**
+- Per-channel outreach resilience ✓ — email/WhatsApp/call each succeed or fail independently (`3b37c62`, `6cb52cb`)
+- Step-level outreach logging ✓ — full attempt audit trail in the Events tab (`0cc198c`)
+- Smart quarantine ✓ — permanent errors → Needs Review, transient errors → reconciler retry (`a5d58bf`, `ede2a40`, `b2886d8`, `8a7d872`)
+- Google Sheets live adapter ✓ — real `gspread` integration + opt-in integration tests (`a632208`, `6ba8147`, `1f4e06c`, `3123e42`)
+- Prometheus metrics foundation ✓ — `/metrics` endpoint, 9 metrics defined (`c9832b8`); wiring into pipeline code is next
+
+**In progress:**
+- Wire metrics into pipeline — increment/observe during ingest, outreach, webhooks, conversion
+
+**Deferred:**
 - ML-based lead scoring (features already logged to the event store)
 - Post-payment automation: invoice generation, onboarding email + credentials
-- Structured logging / metrics (Prometheus counters for pipeline throughput)
+- Dashboard — UI showing pipeline health by status/source/language
+- Structured logging (JSON format + correlation IDs)
 - Postgres migration when SQLite WAL mode hits throughput limits (connection-string swap, no SQL changes needed)
 - Real task queue (ARQ or similar) if BackgroundTasks + reconciler proves insufficient at scale
