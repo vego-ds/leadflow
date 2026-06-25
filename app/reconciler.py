@@ -7,7 +7,11 @@ outreach_state:
   - IN_PROGRESS with outreach_started_at < now - 2 min (worker died mid-flight)
 
 For each stale lead it re-schedules run_outreach_durable() so the outreach
-eventually completes without manual intervention.
+eventually completes without manual intervention. Each reschedule increments
+leadflow_reconciler_retry_total — specifically retries the reconciler itself
+triggers, not every outreach retry (an attempt that fails on its own first
+try and resets to PENDING is counted by outreach_attempt_total instead;
+this metric is "the reconciler had to step in").
 
 The reconciler is started as an asyncio background task during app lifespan
 (app/main.py) and cancelled cleanly on shutdown.
@@ -20,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.db.models import LeadRow
+from app.metrics import reconciler_retry_total
 from app.utils.logging import log
 
 RECONCILER_INTERVAL_SECONDS = 30
@@ -71,6 +76,7 @@ async def _reconcile_once() -> None:
     from app.pipeline.outreach_durable import run_outreach_durable  # noqa: PLC0415
 
     for lead_row in stale_leads:
+        reconciler_retry_total.inc()
         task = asyncio.create_task(
             run_outreach_durable(lead_row.lead_id),
             name=f"outreach-{lead_row.lead_id}",

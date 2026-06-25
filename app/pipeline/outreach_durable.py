@@ -41,6 +41,13 @@ outreach_attempt_completed -> (outreach_quarantined OR
 outreach_retry_scheduled OR outreach_complete). A raised exception instead
 logs outreach_attempt_failed and always retries.
 
+Each attempt also reports to Prometheus (app/metrics.py) via
+_observe_outreach_attempt: outreach_attempt_total{outcome} (success /
+permanent_error / transient_error — a raised exception counts as
+transient_error) and outreach_latency_seconds, the wall-clock delay since
+lead.timestamp_created. That's elapsed-since-ingest, not this function's
+own runtime — observed on every attempt, including reconciler retries.
+
 IMPORTANT: run_outreach_durable is an async function. The sync pipeline
 functions (run_outreach, handle_call_result) are called via
 asyncio.get_event_loop().run_in_executor so they run in a thread, off
@@ -56,10 +63,21 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.db.models import LeadRow
+from app.metrics import outreach_attempt_total, outreach_latency_seconds
 from app.utils.logging import log
 
 MAX_ATTEMPTS = 5
 STALE_THRESHOLD_MINUTES = 2
+
+
+def _observe_outreach_attempt(lead: Any, outcome: str) -> None:
+    """Record this attempt's outcome and its delay since the lead was
+    ingested. Observed on every attempt, not just the first — a lead
+    retried by the reconciler minutes later still gets observed, so the
+    histogram trends upward if retries pile up rather than masking them."""
+    elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(lead.timestamp_created)).total_seconds()
+    outreach_latency_seconds.observe(elapsed)
+    outreach_attempt_total.labels(outcome=outcome).inc()
 
 
 async def run_outreach_durable(
@@ -135,6 +153,14 @@ async def run_outreach_durable(
         )
 
         if result.permanent_error:
+            outcome = "permanent_error"
+        elif not channel_successes:
+            outcome = "transient_error"
+        else:
+            outcome = "success"
+        _observe_outreach_attempt(lead, outcome)
+
+        if outcome == "permanent_error":
             # Permanent error — quarantine to Needs Review, don't retry.
             await _log_event("outreach_quarantined", "permanent error detected")
             await asyncio.to_thread(
@@ -144,7 +170,7 @@ async def run_outreach_durable(
             )
             await _mark_quarantined(lead_id)
             log(f"[outreach_durable] {lead_id}: permanent error — quarantined")
-        elif not channel_successes:
+        elif outcome == "transient_error":
             # Outreach achieved nothing — that's the one case the reconciler
             # should retry. One working channel still counts as a successful
             # attempt.
@@ -156,6 +182,9 @@ async def run_outreach_durable(
             await _log_event("outreach_complete")
             log(f"[outreach_durable] {lead_id}: outreach DONE (channel_failures={sorted(channel_failures)})")
     except Exception as exc:  # noqa: BLE001
+        # run_outreach() itself raising (a bug or infra failure) — always
+        # retries, same treatment as a transient channel failure.
+        _observe_outreach_attempt(lead, "transient_error")
         await _log_event("outreach_attempt_failed", f"{type(exc).__name__}: {exc}")
         log(f"[outreach_durable] {lead_id}: outreach FAILED — {exc}")
         attempts = await _mark_failed_or_retry(lead_id)

@@ -11,6 +11,7 @@ import re
 import uuid
 
 from app.adapters.base import SheetStore
+from app.metrics import ingest_total
 from app.models import Language, Lead, LeadStatus, Source
 
 _PHONE_RE = re.compile(r"^\+?\d{10,13}$")
@@ -55,4 +56,5 @@ def validate_and_normalize(row: dict, store: SheetStore) -> Lead | None:
     )
     store.append_lead(lead)
     store.log_event(lead.lead_id, "lead_created", f"source={source.value}")
+    ingest_total.labels(source=source.value, language=language.value).inc()
     return lead

@@ -39,7 +39,7 @@ from app.adapters.sheets import GoogleSheet
 from app.adapters.whatsapp import MockEmail, MockWhatsApp
 from app.config import settings
 from app.db.engine import dispose_engine
-from app.metrics import REGISTRY
+from app.metrics import REGISTRY, webhook_rejection_total
 from app.models import CallResult, Lead, LeadStatus
 from app.pipeline.conversion import handle_payment
 from app.pipeline.ingest import validate_and_normalize
@@ -183,6 +183,23 @@ async def _read_raw_body(request: Request) -> bytes:
     return await request.body()
 
 
+def _verify_signature_and_count(
+    body: bytes, request: Request, secret: str, webhook_type: str
+) -> None:
+    """verify_signature(), classifying any rejection into
+    webhook_rejection_total before re-raising the original HTTPException."""
+    from app.security.webhook_auth import verify_signature
+
+    sig = request.headers.get("X-LeadFlow-Signature", "")
+    ts = request.headers.get("X-LeadFlow-Timestamp", "")
+    try:
+        verify_signature(body, sig, ts, secret)
+    except HTTPException as exc:
+        reason = "replay_timeout" if "out of window" in str(exc.detail) else "invalid_signature"
+        webhook_rejection_total.labels(type=webhook_type, reason=reason).inc()
+        raise
+
+
 @app.post("/webhook/new-lead")
 def new_lead(
     request: Request,
@@ -198,13 +215,14 @@ def new_lead(
     """
     # Inline HMAC check (avoids dependency injection complexity with optional auth)
     if settings.webhook_signing_secret:
-        sig = request.headers.get("X-LeadFlow-Signature", "")
-        ts = request.headers.get("X-LeadFlow-Timestamp", "")
-        from app.security.webhook_auth import verify_signature
-        verify_signature(body, sig, ts, settings.webhook_signing_secret)
+        _verify_signature_and_count(body, request, settings.webhook_signing_secret, "new_lead")
 
     lead = validate_and_normalize(payload.model_dump(), store)
     if lead is None:
+        # validate_and_normalize already quarantined the row (missing name,
+        # bad phone, unrecognized language) — covers more than literally
+        # "missing", but it's the closest fit among the defined reasons.
+        webhook_rejection_total.labels(type="new_lead", reason="missing_field").inc()
         return {"accepted": False, "reason": "quarantined - see Needs Review"}
 
     background_tasks.add_task(
@@ -242,22 +260,22 @@ def call_result(
     """
     # Inline HMAC check for Bolna webhook
     if settings.bolna_webhook_secret:
-        sig = request.headers.get("X-LeadFlow-Signature", "")
-        ts = request.headers.get("X-LeadFlow-Timestamp", "")
-        from app.security.webhook_auth import verify_signature
-        verify_signature(body, sig, ts, settings.bolna_webhook_secret)
+        _verify_signature_and_count(body, request, settings.bolna_webhook_secret, "call_result")
 
     # Idempotency: dedupe by call_id
     is_new = store.record_processed_webhook("call_result", payload.call_id)
     if not is_new:
+        webhook_rejection_total.labels(type="call_result", reason="duplicate").inc()
         return {"status": "already_processed"}
 
     lead = store.get_lead(payload.lead_id)
     if lead is None:
+        webhook_rejection_total.labels(type="call_result", reason="unknown_lead").inc()
         raise HTTPException(status_code=404, detail="unknown lead_id")
 
     # State-machine guard: only CONTACTED leads can be screened.
     if lead.status != LeadStatus.CONTACTED:
+        webhook_rejection_total.labels(type="call_result", reason="invalid_transition").inc()
         raise HTTPException(
             status_code=409,
             detail=(
@@ -272,6 +290,7 @@ def call_result(
     try:
         set_status(lead, LeadStatus.SCREENED, store)
     except IllegalTransition as exc:
+        webhook_rejection_total.labels(type="call_result", reason="invalid_transition").inc()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     from app.pipeline.scoring import score_lead

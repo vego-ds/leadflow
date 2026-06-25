@@ -9,6 +9,7 @@ mutating the lead, so a lead is never double-converted.
 from __future__ import annotations
 
 from app.adapters.base import SheetStore
+from app.metrics import conversion_total
 from app.models import Lead, LeadStatus
 
 
@@ -21,6 +22,7 @@ def handle_payment(lead: Lead, payment_id: str, store: SheetStore) -> Lead:
     lead.status = LeadStatus.CONVERTED
     store.update_lead(lead)
     store.log_event(lead.lead_id, "payment_received", payment_id)
+    conversion_total.labels(source=lead.source.value, language=lead.preferred_language.value).inc()
     return lead
 
 
